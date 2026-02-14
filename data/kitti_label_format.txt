@@ -1,0 +1,53 @@
+type  truncated  occluded  alpha  bbox_left  bbox_top  bbox_right  bbox_bottom  dim_height  dim_width  dim_length  loc_x  loc_y  loc_z  rotation_y
+
+1. Object Class (type)
+Possible values: Car, Van, Truck, Pedestrian, Person_sitting, Cyclist, Tram, Misc, DontCare
+
+2. Truncation (truncated)
+Float between 0 and 1
+0.0 → fully visible
+1.0 → completely truncated (rare)
+
+3. Occlusion (occluded)
+Integer:
+Value	Meaning
+0		fully visible
+1		partly occluded
+2		largely occluded
+3		unknown
+
+4. Alpha (Observation Angle)
+Angle of object relative to camera
+Range: [-π, π]
+
+5–8. 2D Bounding Box (bbox)
+in Pixel coordinates: bbox_left   bbox_top   bbox_right   bbox_bottom
+
+9–11. 3D Dimensions in meters (height, width, length)
+
+12–14. 3D Location (x, y, z)
+Object center in camera coordinates (meters)
+
+15. Rotation_y
+Yaw angle around the vertical axis (in camera coordinates)
+
+
+Example Label:
+Car 0.00 0 -1.82 599.41 156.40 629.75 189.25 1.56 1.63 3.88 1.84 1.47 8.41 -1.56
+Breaking it down:
+
+Class: Car
+
+Truncated: 0.00
+
+Occluded: 0
+
+Alpha: -1.82
+
+2D box: (599,156) → (629,189)
+
+Dimensions: 1.56m tall, 1.63m wide, 3.88m long
+
+Location: (1.84, 1.47, 8.41) meters from camera
+
+Rotation_y: -1.56 rad

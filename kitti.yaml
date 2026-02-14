@@ -1,0 +1,7 @@
+path: H:\\GitHub\\Kitti_Yolo_tracking\\data\\kitti_yolo 
+train: H:\\GitHub\\Kitti_Yolo_tracking\\data\\kitti_yolo\\images\\train
+val: H:\\GitHub\\Kitti_Yolo_tracking\\data\\kitti_yolo\\images\\val
+names:
+  0: Car
+  1: Pedestrian
+  2: Cyclist
