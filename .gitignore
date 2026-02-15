@@ -1,6 +1,0 @@
-**/kitti_yolo/**/*.png
-**/kitti_yolo/**/*.txt
-**/testing/**/*.png
-**/training/**/*.txt
-**/training/**/*.png
-**/jupyter/**/*.zip
