@@ -9,7 +9,9 @@ This repository provides a complete, modular pipeline for training YOLO models o
 - Train/val split  
 - Model training on Google Colab GPU  
 - Evaluation (mAP50 & mAP50-95) 
-- **Model benchmarking across FP32, FP32-GPU, FP16, and INT8**
+- Model benchmarking across FP32, FP32-GPU, FP16, and INT8
+- **FAISS vector index and document store used by the RAG‑powered query application**
+- **RAG‑Powered LLM Query Engine (Llama3 + FAISS)**
 - Visualization of predictions vs. ground truth  
 - Sample video inference results  
 
@@ -19,13 +21,16 @@ The entire workflow is orchestrated through a Colab notebook for reproducibility
 
 ## Repository Structure
 
-'-- download_kittidataset.py
-'-- convert_kitti_to_yolo.py
-'-- evaluate_yolo.py
-'-- benchmark_model.py          <-- NEW: Precision & latency benchmarking
-'-- visualize_predictions.py
-'-- google_collab_trigger_training.ipynb
-'-- kitti.yaml
+'-- download_kittidataset.py\
+'-- convert_kitti_to_yolo.py\
+'-- evaluate_yolo.py\
+'-- benchmark_model.py\
+'-- visualize_predictions.py\
+'-- generate_faiss_doc.py\
+'-- llmquery_app.py\
+'-- data/  <-- generated files & label format.txt\
+'-- google_collab_trigger_training.ipynb\
+'-- kitti.yaml\
 '-- README.md
 
 ## Requirements
@@ -50,7 +55,12 @@ Or install manually:
 - requests  
 - zipfile36 (if using Python < 3.10)  
 - PyYAML  
-- glob2  
+- onnxruntime-tools
+- glob2
+- faiss-cpu
+- streamlit
+- sentence-transformers
+
 
 ### Google Colab Requirements
 
@@ -82,12 +92,12 @@ The pipeline automatically downloads:
 - Converts KITTI label format → YOLO label format  
 - Normalizes bounding boxes  
 - Creates the YOLO folder structure:
-kitti_yolo/
-|-- images/
-|   '-- train/
-|   '-- val/
-|-- labels/
-    '-- train/
+kitti_yolo/\
+|-- images/\
+    '-- train/\
+    '-- val/\
+|-- labels/\
+    '-- train/\
     '-- val/
 
 
@@ -106,7 +116,7 @@ kitti_yolo/
 - Displays side-by-side comparison for qualitative inspection  
 
 
-## 5: `benchmark_model.py`
+### 5: `benchmark_model.py`
 
 This script benchmarks a trained YOLO model across multiple precisions:
 
@@ -120,14 +130,6 @@ For each precision, it reports:
 - `mAP50`  
 - `mAP50-95`  
 - `latency_ms` (average inference latency per image)
-
-The script is automatically triggered inside:
-
-### `google_collab_trigger_training.ipynb`
-
-after training and evaluation are complete.
-
----
 
 ## Benchmark Results
 
@@ -175,6 +177,87 @@ To achieve true acceleration from quantization and mixed precision, the next ste
 
 ---
 
+### 6: `generate_faiss_doc.py`
+
+This script builds the FAISS vector index and document store used by the RAG‑powered query application.
+
+**What it does**
+
+Loads KITTI metadata (cars, pedestrians, cyclists, occlusion, truncation)
+
+Generates a summary text for each frame
+
+Embeds each summary using a SentenceTransformer model
+
+Stores:
+
+`kitti_docs.json` → list of documents with metadata + summary
+
+`kitti_index.faiss` → FAISS index for fast similarity search
+
+`embedding_model.txt` → name of the embedding model used
+
+These are generated into `data/`
+
+---
+
+### 7: `llmquery_app.py`
+
+This Streamlit application lets you query the KITTI dataset using natural language, combining:
+
+**Numeric filtering** (e.g., “more than 5 pedestrians”)
+
+**Fuzzy interpretation** (e.g., “crowded”, “busy”, “heavy occlusion”)
+
+**Synonym expansion** (e.g., “packed”, “dense”, “traffic heavy”)
+
+**Semantic search** using FAISS + SentenceTransformer
+
+Local LLM reasoning using Ollama Llama3
+
+**Capabilities**
+
+Understands multi‑condition queries
+
+Applies fuzzy rules from fuzzy_rules.json
+
+Falls back to semantic search when numeric filters match nothing
+
+Displays matching KITTI frames with images and metadata
+
+**Running the LLM Query App**
+
+1. **Start Ollama with Llama3**
+
+Before launching the app, you must start the local LLM server:
+
+`ollama run llama3`
+
+This downloads the model (first time only) and starts the inference engine. 
+Leave this terminal open.
+
+2. **Run the Streamlit App**
+
+In a new terminal:
+
+`streamlit run llmquery_app.py`
+
+The app will automatically:
+
+Load FAISS index\
+Load SentenceTransformer embeddings\
+Load fuzzy rules\
+Connect to Ollama\
+Interpret your query\
+Display matching KITTI frames
+
+**Example Queries:**
+
+“crowded scenes with heavy occlusion”\
+“more than 5 pedestrians and few cyclists”\
+“busy intersection with high occlusion”\
+“frames with many cars and rare cyclists”
+
 ## Training Workflow (Google Colab)
 
 All scripts are orchestrated inside:
@@ -187,10 +270,11 @@ This notebook:
 2. Downloads KITTI dataset  
 3. Converts KITTI → YOLO  
 4. Triggers YOLO training on GPU  
-5. Evaluates the trained model  
-6. **Runs precision benchmarking (`benchmark_model.py`)**  
-7. Visualizes predictions  
-8. Saves results back to Drive  
+5. Evaluates the trained model 
+6. Visualizes predictions   
+7. Runs precision benchmarking
+8. generate faiss vector idnex and document store 
+9. Saves results back to Drive  
 
 ## `kitti.yaml` — Dataset Configuration File
 
@@ -200,7 +284,7 @@ This YAML file defines:
 - Validation image paths  
 - Class names  
 
-Example:
+Example: (available in `data/`)
 
 path: kitti_yolo
 train: images/train
@@ -250,4 +334,6 @@ Scripts will run, but full training is slow without a GPU.
 - Supports YOLOv8, YOLOv9, YOLOv10, YOLOv11 
 - Results are reproducible and easy to extend  
 - Benchmarking module provides deeper insight into deployment performance  
+- builds the FAISS vector index and document store
+- Streamlit application lets you query the KITTI dataset using natural language
 - Future work will focus on TensorRT and OpenVINO acceleration   

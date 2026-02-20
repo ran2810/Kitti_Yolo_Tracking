@@ -1,0 +1,22 @@
+{
+  "crowded": {
+    "synonyms": ["many pedestrians", "packed", "dense", "busy sidewalk"],
+    "filters": { "num_pedestrians": { ">=": 5 } }
+  },
+  "busy": {
+    "synonyms": ["traffic heavy", "many cars", "jammed", "congested"],
+    "filters": { "num_cars": { ">=": 10 } }
+  },
+  "rare cyclists": {
+    "synonyms": ["few cyclists", "almost no cyclists"],
+    "filters": { "num_cyclists": { "<=": 1 } }
+  },
+  "heavy occlusion": {
+    "synonyms": ["high occlusion", "occluded", "blocked view"],
+    "filters": { "max_occlusion": { ">=": 2 } }
+  },
+  "light occlusion": {
+    "synonyms": ["low occlusion", "clear view"],
+    "filters": { "max_occlusion": { "<=": 1 } }
+  }
+}
