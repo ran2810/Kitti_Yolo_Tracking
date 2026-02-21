@@ -1,15 +1,20 @@
 import os, json
 from sentence_transformers import SentenceTransformer
-import numpy as np
 import faiss
+from tqdm import tqdm
 
+# ------------------------------------------------------------
+# KITTI PARSER
+# ------------------------------------------------------------
 def parse_kitti_label_file(path):
     """
-    Docstring for parse_kitti_label_file
-    
+    Parse KITTI label file into structured objects.
     :param path: label files relative path
     """
     objects = []
+    if not os.path.exists(path):
+        return objects
+
     with open(path) as f:
         for line in f:
             parts = line.strip().split()
@@ -27,10 +32,12 @@ def parse_kitti_label_file(path):
     return objects
 
 
+# ------------------------------------------------------------
+# SCENE DOCUMENT GENERATION
+# ------------------------------------------------------------
 def build_doc(frame_id, label_dir, image_dir):
     """
-    generate doc for each image from label file
-    
+    Build a scene-level document for FAISS indexing.
     :param frame_id: image frame id
     :param label_dir: label files relative path
     :param image_dir: image files relative path
@@ -44,6 +51,7 @@ def build_doc(frame_id, label_dir, image_dir):
     num_cars = sum(1 for o in objects if o["type"] == "Car")
     num_peds = sum(1 for o in objects if o["type"] == "Pedestrian")
     num_cyc = sum(1 for o in objects if o["type"] == "Cyclist")
+
     max_occ = max((o["occluded"] for o in objects), default=0)
     max_trunc = max((o["truncated"] for o in objects), default=0.0)
 
@@ -68,38 +76,190 @@ def build_doc(frame_id, label_dir, image_dir):
         "max_truncation": max_trunc
     }
 
-def build_kitti_index(label_dir, image_dir):
+
+# ------------------------------------------------------------
+# ERROR ANALYSIS HELPERS
+# ------------------------------------------------------------
+def compute_iou(boxA, boxB):
     """
-    index into faiss db and embedded into sentence transformer model 
+    Compute IoU between two KITTI bbox arrays [x1,y1,x2,y2].
+    """
+    x1A, y1A, x2A, y2A = boxA
+    x1B, y1B, x2B, y2B = boxB
+
+    inter_x1 = max(x1A, x1B)
+    inter_y1 = max(y1A, y1B)
+    inter_x2 = min(x2A, x2B)
+    inter_y2 = min(y2A, y2B)
+
+    inter_area = max(0, inter_x2 - inter_x1) * max(0, inter_y2 - inter_y1)
+    areaA = (x2A - x1A) * (y2A - y1A)
+    areaB = (x2B - x1B) * (y2B - y1B)
+
+    union = areaA + areaB - inter_area
+    if union <= 0:
+        return 0.0
+    return inter_area / union
+
+# ------------------------------------------------------------
+# ERROR DOCUMENT GENERATION
+# ------------------------------------------------------------
+def generate_error_docs(frame_ids, label_dir, pred_dir, image_dir):
+    """
+    Generate FP/FN/IoU error documents for RAG error analysis.
+    """
+    error_docs = []
+
+    for fid in tqdm(frame_ids, desc="Generating error documents"):
+        gt_path = os.path.join(label_dir, f"{fid}.txt")
+        pred_path = os.path.join(pred_dir, f"{fid}.txt")
+        img_path = os.path.join(image_dir, f"{fid}.png")
+
+        # parse ground truth label file
+        gt_objs = parse_kitti_label_file(gt_path)
+
+        # prediction file missing → no detections
+        if not os.path.exists(pred_path):
+            for obj in gt_objs:
+                error_docs.append({
+                    "id": fid,
+                    "error_type": "FN",
+                    "class": obj["type"],
+                    "iou": 0.0,
+                    "occlusion_level": obj["occluded"],
+                    "truncation_value": obj["truncated"],
+                    "summary_text": (
+                        f"False negative: missed {obj['type']} in frame {fid} "
+                        f"(no predictions). Occlusion {obj['occluded']}, truncation {obj['truncated']}."
+                    ),
+                    "image_path": img_path
+                })
+            continue
+ 
+        # parse prediction label file
+        pred_objs = parse_kitti_label_file(pred_path)
+
+        gt_boxes = [(o["type"], o["bbox"], o["occluded"], o["truncated"]) for o in gt_objs]
+        pred_boxes = [(o["type"], o["bbox"]) for o in pred_objs]
+
+        matched_gt = set()
+        matched_pred = set()
+
+        # Match predictions to GT
+        for pi, (p_cls, p_box) in enumerate(pred_boxes):
+            best_iou = 0
+            best_gi = None
+
+            for gi, (g_cls, g_box, g_occ, g_trunc) in enumerate(gt_boxes):
+                iou = compute_iou(p_box, g_box)
+                if iou > best_iou:
+                    best_iou = iou
+                    best_gi = gi
+
+            if best_iou >= 0.5:
+                matched_gt.add(best_gi)
+                matched_pred.add(pi)
+            else:
+                # False Positive
+                error_docs.append({
+                    "id": fid,
+                    "error_type": "FP",
+                    "class": p_cls,
+                    "iou": float(best_iou),
+                    "bbox": p_box, 
+                    "confidence": pred_objs[pi].get("score", None), 
+                    "occlusion_level": None,
+                    "truncation_value": None,
+                    "summary_text": f"False positive: predicted {p_cls} with IoU {best_iou:.2f} in frame {fid}.",
+                    "image_path": img_path
+                })
+
+        # False Negatives
+        for gi, (g_cls, g_box, g_occ, g_trunc) in enumerate(gt_boxes):
+            if gi not in matched_gt:
+                error_docs.append({
+                    "id": fid,
+                    "error_type": "FN",
+                    "class": g_cls,
+                    "iou": 0.0,
+                    "bbox": g_box,
+                    "occlusion_level": g_occ,
+                    "truncation_value": g_trunc,
+                    "summary_text": ( f"False negative: missed {g_cls} in frame {fid} " 
+                                     f"with occlusion {g_occ} and truncation {g_trunc}." ),
+                    "image_path": img_path
+                })
+
+    return error_docs
+
+
+# ------------------------------------------------------------
+# MAIN INDEX BUILDER
+# ------------------------------------------------------------
+def build_kitti_index(label_dir, image_dir, pred_dir):
+    """
+    Docstring for build_kitti_index
     
     :param label_dir: label files relative path
     :param image_dir: image files relative path
+    :param pred_dir: prediction label files relative path
     """
-    # generate label files data as doc
+
     frame_ids = [f.split(".")[0] for f in os.listdir(label_dir)]
-    docs = [build_doc(fid, label_dir, image_dir) for fid in frame_ids]
 
-    # encode summary of each label file into sentence transformer model
+    # -------------------------
+    # Scene documents
+    # -------------------------
+    scene_docs = [build_doc(fid, label_dir, image_dir) for fid in frame_ids]
+
     model = SentenceTransformer("all-MiniLM-L6-v2")
-    texts = [d["summary_text"] for d in docs]
-    embeddings = model.encode(texts, convert_to_numpy=True)
+    scene_embeddings = model.encode(
+        [d["summary_text"] for d in scene_docs],
+        convert_to_numpy=True
+    )
 
-    # index generated the embeddings into faiss database
-    index = faiss.IndexFlatL2(embeddings.shape[1])
-    index.add(embeddings)
+    scene_index = faiss.IndexFlatL2(scene_embeddings.shape[1])
+    scene_index.add(scene_embeddings)
 
-    return docs, index, model
+    # -------------------------
+    # Error documents
+    # -------------------------
+    error_docs = generate_error_docs(frame_ids, label_dir, pred_dir, image_dir)
+
+    if len(error_docs) > 0:
+        error_embeddings = model.encode(
+            [d["summary_text"] for d in error_docs],
+            convert_to_numpy=True
+        )
+        error_index = faiss.IndexFlatL2(error_embeddings.shape[1])
+        error_index.add(error_embeddings)
+    else:
+        error_index = None
+
+    return scene_docs, scene_index, error_docs, error_index, model
 
 
 # ------------------------------------------------------------
-# Run directly from CLI
+# CLI ENTRY POINT
 # ------------------------------------------------------------
 if __name__ == "__main__":
-    docs, index, model = build_kitti_index("data/training/label_2", "data/training/image_2")
+    label_dir = "data/training/label_2"
+    image_dir = "data/training/image_2"
+    pred_dir = "runs/detect/predict/kitti_labels"
 
-    # write data into files
-    with open("data/kitti_docs.json", "w") as f: 
-        json.dump(docs, f, indent=2)
-    faiss.write_index(index, "data/kitti_index.faiss")
-    with open("data/embedding_model.txt", "w") as f: 
+    scene_docs, scene_index, error_docs, error_index, model = build_kitti_index(label_dir, image_dir, pred_dir)
+
+    # Save scene docs
+    with open("data/kitti_docs.json", "w") as f:
+        json.dump(scene_docs, f, indent=2)
+    faiss.write_index(scene_index, "data/kitti_index.faiss")
+
+    # Save error docs
+    with open("data/error_docs.json", "w") as f:
+        json.dump(error_docs, f, indent=2)
+    if error_index:
+        faiss.write_index(error_index, "data/error_index.faiss")
+
+    # Save embedding model name
+    with open("data/embedding_model.txt", "w") as f:
         f.write("all-MiniLM-L6-v2")

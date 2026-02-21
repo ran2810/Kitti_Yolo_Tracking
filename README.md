@@ -2,16 +2,16 @@
 
 ## Overview
 
-This repository provides a complete, modular pipeline for training YOLO models on the KITTI Object Detection Dataset. It includes:
+This repository provides a complete, modular pipeline for training YOLO models on the KITTI Object Detection Dataset & RAG‑Powered LLM Query Engine (Llama3 + FAISS). It includes:
 
 - Automated dataset download  
-- KITTI -> YOLO label conversion  
+- KITTI <-> YOLO label conversion  
 - Train/val split  
 - Model training on Google Colab GPU  
 - Evaluation (mAP50 & mAP50-95) 
 - Model benchmarking across FP32, FP32-GPU, FP16, and INT8
-- **FAISS vector index and document store used by the RAG‑powered query application**
-- **RAG‑Powered LLM Query Engine (Llama3 + FAISS)**
+- FAISS vector index and document store used by the RAG‑powered query application
+- RAG‑Powered LLM Query Engine (Llama3 + FAISS)
 - Visualization of predictions vs. ground truth  
 - Sample video inference results  
 
@@ -22,7 +22,7 @@ The entire workflow is orchestrated through a Colab notebook for reproducibility
 ## Repository Structure
 
 '-- download_kittidataset.py\
-'-- convert_kitti_to_yolo.py\
+'-- label_convertor.py\
 '-- evaluate_yolo.py\
 '-- benchmark_model.py\
 '-- visualize_predictions.py\
@@ -88,17 +88,19 @@ The pipeline automatically downloads:
 - Optionally visualizes a sample image with its KITTI label  
 - Ensures the dataset is ready for conversion  
 
-### 2. `convert_kitti_to_yolo.py`
-- Converts KITTI label format → YOLO label format  
+### 2. `label_convertor.py`
+- Converts KITTI label format <-> YOLO label format based on input arg as `convert_typ`
 - Normalizes bounding boxes  
 - Creates the YOLO folder structure:
 kitti_yolo/\
 |-- images/\
-    '-- train/\
-    '-- val/\
+&emsp;'-- train/\
+&emsp;'-- val/\
 |-- labels/\
-    '-- train/\
-    '-- val/
+&emsp;'-- train/\
+&emsp;'-- val/
+
+The yolo to kitti converted labels are available by default in `runs\detect\predict\kitti_labels`
 
 
 - Performs a train/val split  
@@ -179,17 +181,69 @@ To achieve true acceleration from quantization and mixed precision, the next ste
 
 ### 6: `generate_faiss_doc.py`
 
-This script builds the FAISS vector index and document store used by the RAG‑powered query application.
+This script now builds **two FAISS indexes**:
 
-**What it does**
+# A. Scene‑Level Index
 
-Loads KITTI metadata (cars, pedestrians, cyclists, occlusion, truncation)
+Used for natural‑language queries about scene content:
 
-Generates a summary text for each frame
+- number of cars / pedestrians / cyclists
 
-Embeds each summary using a SentenceTransformer model
+- maximum occlusion
+
+- maximum truncation
+
+- fuzzy terms (crowded, busy, heavy occlusion, etc.)
+
+Each frame produces a document containing:
+
+- metadata (counts, occlusion, truncation)
+
+- summary text
+
+- image path
+
+- FAISS embedding
+
+# B. Error‑Level Index (FP/FN Analysis) (NEW)
+
+The script now:
+
+- Loads KITTI ground‑truth labels
+
+- Loads YOLO predictions converted to KITTI format
+
+- Computes IoU for each GT–prediction pair
+
+Identifies:
+
+# False Positives (FP)
+
+# False Negatives (FN)
+
+Stores detailed error documents containing:
+
+- error_type (FP or FN)
+
+- class
+
+- iou
+
+- bbox
+
+- occlusion_level (from GT)
+
+- truncation_value (from GT)
+
+- summary_text
+
+- image_path
 
 Stores:
+
+`error_docs.json` → list of detailed error documents with error type and class
+
+`error_index.faiss` → FAISS index for fast similarity search
 
 `kitti_docs.json` → list of documents with metadata + summary
 
@@ -203,7 +257,9 @@ These are generated into `data/`
 
 ### 7: `llmquery_app.py`
 
-This Streamlit application lets you query the KITTI dataset using natural language, combining:
+This Streamlit application lets you query in 2 modes the KITTI dataset using natural language, combining:
+
+# 1. Scene Search Mode
 
 **Numeric filtering** (e.g., “more than 5 pedestrians”)
 
@@ -224,6 +280,30 @@ Applies fuzzy rules from fuzzy_rules.json
 Falls back to semantic search when numeric filters match nothing
 
 Displays matching KITTI frames with images and metadata
+
+# 2. Error Analysis Mode (NEW)
+
+**FP/FN filtering** (e.g. "false positives for cyclists")
+
+**IoU filtering** (e.g. "IoU < 0.4 errors" or "IoU > 0.7")
+
+**Occlusion/truncation filtering** (e.g. "missed pedestrians with occlusion 3")
+
+**Semantic search** using FAISS + SentenceTransformer
+
+# Side‑by‑side visualization: GT (left) vs Predictions (right)
+
+# Bounding‑box overlays:
+
+- GT → green
+
+- Predictions → yellow
+
+- FP → red
+
+- FN → blue
+
+Only GT classes relevant to YOLO (Car, Pedestrian, Cyclist) are drawn.
 
 **Running the LLM Query App**
 
@@ -249,14 +329,26 @@ Load SentenceTransformer embeddings\
 Load fuzzy rules\
 Connect to Ollama\
 Interpret your query\
-Display matching KITTI frames
+Display matching KITTI frames or side by side depending on query mode
 
 **Example Queries:**
 
-“crowded scenes with heavy occlusion”\
-“more than 5 pedestrians and few cyclists”\
-“busy intersection with high occlusion”\
-“frames with many cars and rare cyclists”
+# A. Scene Search 
+
+"more than 5 pedestrians"\
+"busy intersection with few cyclists"\
+"heavy occlusion and more than 2 cars"\
+"atleast 2 cars and more than 3 pedestrians"\
+"crowded and heavy occlusion"\
+"crowded and busy with rare cyclists"\
+"few cyclists and rare pedestrians"
+
+# B. Error Anaylsis
+
+“false positives for cyclists”\
+“missed pedestrians with occlusion 3”\
+“IoU < 0.4 errors for cars”\
+“FN for truncation > 0.5”
 
 ## Training Workflow (Google Colab)
 
@@ -273,8 +365,9 @@ This notebook:
 5. Evaluates the trained model 
 6. Visualizes predictions   
 7. Runs precision benchmarking
-8. generate faiss vector idnex and document store 
-9. Saves results back to Drive  
+8. Generate prediction label files (YOLO format)
+9. Convert prediction label files: YOLO -> KITTI
+10. generate faiss vector idnex and document store 
 
 ## `kitti.yaml` — Dataset Configuration File
 
@@ -334,6 +427,7 @@ Scripts will run, but full training is slow without a GPU.
 - Supports YOLOv8, YOLOv9, YOLOv10, YOLOv11 
 - Results are reproducible and easy to extend  
 - Benchmarking module provides deeper insight into deployment performance  
-- builds the FAISS vector index and document store
-- Streamlit application lets you query the KITTI dataset using natural language
+- builds the FAISS vector index,  document store for GT & Error document generation (FP/FN/IoU/occ/trunc)
+- Streamlit application lets you RAG‑powered LLM query engine for KITTI dataset using natural language
+- Query engine for error analysis shows Side‑by‑side GT vs prediction visualization
 - Future work will focus on TensorRT and OpenVINO acceleration   
