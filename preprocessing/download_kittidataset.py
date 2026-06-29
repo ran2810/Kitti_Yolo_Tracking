@@ -8,7 +8,7 @@ from ultralytics import YOLO
 
 
 # DOWNLOAD KITTI DATASET (IMAGES + LABELS)
-def download_kitti(output_dir="kitti"):
+def download_kitti(output_dir="data"):
     os.makedirs(output_dir, exist_ok=True)
 
     files = {

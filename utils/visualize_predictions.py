@@ -39,46 +39,47 @@ def load_yolo_label(label_path):
     return labels
 
 
-# Load model
-model = YOLO("runs/detect/train/weights/best.pt")
+if __name__ == "__main__":
+    # Load model
+    model = YOLO("runs/detect/train/weights/best.pt")
 
-# Class names (KITTI subset)
-CLASSES = ["Car", "Pedestrian", "Cyclist"]
+    # Class names (KITTI subset)
+    CLASSES = ["Car", "Pedestrian", "Cyclist"]
 
-# Pick a validation image
-img_path = sorted(glob.glob("kitti_yolo/images/val/*.png"))[0]
-label_path = img_path.replace("images", "labels").replace(".png", ".txt")
+    # Pick a validation image
+    img_path = sorted(glob.glob("kitti_yolo/images/val/*.png"))[0]
+    label_path = img_path.replace("images", "labels").replace(".png", ".txt")
 
-# Load image + ground truth
-img = cv2.imread(img_path)
-img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-gt_labels = load_yolo_label(label_path)
+    # Load image + ground truth
+    img = cv2.imread(img_path)
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    gt_labels = load_yolo_label(label_path)
 
-# Draw ground truth
-img_gt = draw_yolo_boxes(img, gt_labels, CLASSES, color=(0,255,0))
+    # Draw ground truth
+    img_gt = draw_yolo_boxes(img, gt_labels, CLASSES, color=(0,255,0))
 
-# Run prediction
-results = model.predict(img_path, conf=0.25)
-pred_labels = []
+    # Run prediction
+    results = model.predict(img_path, conf=0.25)
+    pred_labels = []
 
-for box in results[0].boxes:
-    cls = int(box.cls[0])
-    xc, yc, w, h = box.xywhn[0].tolist()
-    pred_labels.append((cls, xc, yc, w, h))
+    for box in results[0].boxes:
+        cls = int(box.cls[0])
+        xc, yc, w, h = box.xywhn[0].tolist()
+        pred_labels.append((cls, xc, yc, w, h))
 
-# Draw predictions
-img_pred = draw_yolo_boxes(img, pred_labels, CLASSES, color=(255,0,0))
+    # Draw predictions
+    img_pred = draw_yolo_boxes(img, pred_labels, CLASSES, color=(255,0,0))
 
-# Show side-by-side
-plt.figure(figsize=(16,8))
-plt.subplot(1,2,1)
-plt.title("Ground Truth")
-plt.imshow(img_gt)
-plt.axis("off")
+    # Show side-by-side
+    plt.figure(figsize=(16,8))
+    plt.subplot(1,2,1)
+    plt.title("Ground Truth")
+    plt.imshow(img_gt)
+    plt.axis("off")
 
-plt.subplot(1,2,2)
-plt.title("Prediction")
-plt.imshow(img_pred)
-plt.axis("off")
+    plt.subplot(1,2,2)
+    plt.title("Prediction")
+    plt.imshow(img_pred)
+    plt.axis("off")
 
-plt.show()
+    plt.show()
