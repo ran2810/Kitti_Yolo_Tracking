@@ -1,5 +1,7 @@
 import streamlit as st
 import json, os, time
+import yaml
+from datetime import datetime
 import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -15,6 +17,7 @@ try:
     GROQ_AVAILABLE = True
 except ImportError:
     GROQ_AVAILABLE = False
+
 
 # enable print debug statements
 print_debug = True
@@ -581,6 +584,64 @@ def render_side_by_side(frame_id, image_path, frame_errors):
 
 
 # ---------------------------------------------------------
+# DATASET YAML EXPORT
+# ---------------------------------------------------------
+
+# PyYAML only auto-quotes strings that look octal (e.g. "002707" has digits 0-7).
+# Strings like "006139" contain 8/9 so YAML writes them unquoted as plain integers.
+# _QuotedStr forces single-quote style regardless of content.
+class _QuotedStr(str):
+    pass
+
+def _quoted_representer(dumper, data):
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="'")
+
+yaml.add_representer(_QuotedStr, _quoted_representer)
+
+
+def export_dataset_yaml(query, mode, result_docs, total_matched_frames, llm_parsed):
+    """Write a frame manifest YAML for the query result -> output path."""
+    
+    out_dir = parent_dir / "data" / "datasets"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # get 5 words from query
+    suffix = "_".join(query.lower().split()[:5])
+    suffix = re.sub(r"[^a-z0-9_]", "", suffix)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = out_dir / f"{timestamp}_{suffix}.yaml"
+
+    frames = [
+        {
+            # _QuotedStr forces single-quote style so id is always '006139'. since its inconsistent in yaml
+            "id":    _QuotedStr(d["id"]),
+            "image": f"data/training/image_2/{d['id']}.png",
+            "label": f"data/training/label_2/{d['id']}.txt",
+        }
+        for d in result_docs
+    ]
+
+    # remove internal _source key before writing
+    llm_output = {k: v for k, v in llm_parsed.items() if k != "_source"}
+
+    manifest = {
+        "query":         query,                 # user query 
+        "mode":          mode,                  # error or scene search
+        "exported_at":   datetime.now().isoformat(timespec="seconds"),
+        "total_matched": total_matched_frames,  # total number of frames detected
+        "exported":      len(frames),           # top_k user defined
+        "llm_output":    llm_output,            # llm parsed output
+        "frames":        frames,                # list of top_k frames
+    }
+
+    # dump data into yml under data/dataset/..
+    with open(out_path, "w") as f:
+        yaml.dump(manifest, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+    return out_path
+
+
+# ---------------------------------------------------------
 # MAIN STREAMLIT UI
 # ---------------------------------------------------------
 st.title("KITTI RAG Explorer (Scene Search + Error Analysis)")
@@ -735,6 +796,13 @@ if query:
             else:
                 # scene search -> just show the raw image
                 st.image(img_path)
+        # export matched frames as a YAML dataset manifest
+        if st.button("Export Dataset (YAML)", key="export_filter"):
+            out_path = export_dataset_yaml(
+                query, effective_mode, filtered_docs[:top_k],
+                total_matched_frames=len(filtered_docs), llm_parsed=parsed,
+            )
+            st.success(f"Saved {len(filtered_docs[:top_k])} of {len(filtered_docs)} frames → `{out_path.relative_to(parent_dir)}`")
         st.stop()
 
     if query_filters:
@@ -757,6 +825,13 @@ if query:
                      caption="GT (left) vs Predictions (right)")
         # scene mode -> just show the raw image
         st.image(img_path)
+    # export semantic result frames as a YAML dataset manifest
+    if st.button("Export Dataset (YAML)", key="export_semantic"):
+        out_path = export_dataset_yaml(
+            query, effective_mode, results,
+            total_matched_frames=len(results), llm_parsed=parsed,
+        )
+        st.success(f"Saved {len(results)} frames → `{out_path.relative_to(parent_dir)}`")
 
 # ---------------------------------------------------------
 # CLIP VISUAL SEARCH (modes: text -> image or image -> image)

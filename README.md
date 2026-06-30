@@ -14,27 +14,44 @@ model/benchmark_model.py                 # FP32/FP16/INT8 benchmarking
 utils/visualize_predictions.py           # GT vs prediction overlay
 queries/generate_faiss_doc.py            # builds FAISS indexes
 queries/llmquery_app.py                  # Streamlit query app
+queries/fuzzy_rules.json                 # synonym + filter rules for fuzzy matching
 data/                                    # generated indexes, docs, configs
-google_collab_training_trigger.ipynb     # end-to-end Colab notebook
+data/datasets/                           # exported YAML dataset manifests
+google_collab_training.ipynb             # end-to-end Colab notebook
 ```
 
 ---
 
+## Requirements
+
+```
+pip install -r requirements.txt
+```
+---
+
 ## Phase 1: ML Lifecycle
 
-Downloads the KITTI dataset, converts labels between KITTI and YOLO formats, trains a YOLO model on Google Colab, and evaluates with mAP50/mAP50-95. The notebook `google_collab_training_trigger.ipynb` sequences all steps end-to-end on Colab GPU.
+Downloads the KITTI dataset, converts labels between KITTI and YOLO formats, trains a YOLO model on Google Colab, and evaluates with mAP50/mAP50-95. The notebook `google_collab_training.ipynb` sequences all steps end-to-end on Colab GPU.
 
-Pipeline order:
+The pipeline is split between Colab (GPU steps) and local (everything else).
+
+Colab — `google_collab_training.ipynb`:
 ```
 download_kittidataset.py        # fetches images + labels into data/training/
 label_convertor.py kitti2yolo   # converts labels, splits into train/val -> kitti_yolo/
-                                # train YOLO (run inside notebook)
+                                # train YOLO
 evaluate_yolo.py                # mAP50, mAP50-95 on val set
 visualize_predictions.py        # side-by-side GT vs prediction for one image
 benchmark_model.py              # FP32/FP16/INT8 across CPU, GPU, TensorRT
                                 # run YOLO predict on data/training/image_2/
-label_convertor.py yolo2kitti   # converts predictions back to KITTI format
+                                #   -> saves YOLO-format labels to runs/detect/predict/labels/
+```
+
+Local (run after syncing `runs/` from Google Drive):
+```
+label_convertor.py yolo2kitti   # converts prediction labels to KITTI format
 generate_faiss_doc.py           # builds scene + error FAISS indexes and CLIP indexes
+llmquery_app.py                 # Streamlit query app
 ```
 
 ---
@@ -76,7 +93,9 @@ User Query
     |       |       |--> fuzzy match? --> filters from rules, LLM skipped
     |       |       |--> LLM (Ollama / Groq) --> structured filters
     |       |       |--> filter match?  --> show matching frames
+    |       |       |                       --> Export Dataset (YAML)
     |       |       └--> no match       --> FAISS semantic search --> frames
+    |       |                               --> Export Dataset (YAML)
     |       |
     |       └--> Error Analysis  (FP/FN, IoU, class, occlusion)
     |               |--> same LLM / fuzzy / semantic path
@@ -98,9 +117,32 @@ User Query
 
 Both Scene Search and Error Analysis go through the same resolution path. First, the query is checked against `fuzzy_rules.json` — terms like "crowded", "few cyclists", "heavy occlusion" are pre-mapped to exact numeric filters with synonyms. If the query is fully covered by fuzzy rules (after stripping stopwords with no filter intent), the LLM is skipped entirely and filters are applied directly. The UI shows "fuzzy rules only — LLM skipped" in this case.
 
-If fuzzy rules don't cover everything, the query goes to the LLM. Two backends are supported and switchable at runtime from the sidebar: Ollama (local, private, no API key) and Groq (cloud, ~10x faster, free tier). The LLM returns structured filters which are applied against the FAISS index. If nothing matches, it falls back to sentence-transformer semantic search over the same index.
+If fuzzy rules don't cover everything, the query goes to the LLM. Two backends are supported and switchable at runtime from the sidebar: Ollama (local, private, no API key) and Groq (cloud, ~10x faster). Both run at temperature=0 for deterministic output. The LLM returns structured filters which are applied against the FAISS index. If nothing matches, it falls back to sentence-transformer semantic search over the same index.
 
 Error Analysis results include a side-by-side overlay: GT boxes in green, predictions in yellow, false positives in red, false negatives in blue.
+
+### Dataset export
+
+After any query returns results, an "Export Dataset (YAML)" button appears below the frames. Clicking it writes a manifest to `data/datasets/` that records which frames matched, the total match count, and the LLM filter output that produced them.
+
+```yaml
+query: more than 5 pedestrians
+mode: Scene Search
+exported_at: '2024-06-30T14:22:01'
+total_matched: 209
+exported: 5
+llm_output:
+  filters:
+    num_pedestrians:
+      '>': 5
+  semantic_query: scenes with many pedestrians
+frames:
+- id: '002445'
+  image: data/training/image_2/002445.png
+  label: data/training/label_2/002445.txt
+```
+
+This demonstrates the data lifecycle — natural language query to a reproducible, traceable frame subset — without coupling to a specific annotation tool.
 
 ### Visual search details
 
@@ -132,17 +174,13 @@ Both modes support two CLIP models selectable from the sidebar. ViT-B-32 is fast
 ### Running the app
 
 ```
-ollama run llama3          # skip if using Groq
+ollama run llama3                                  # skip if using Groq
 cd queries
-streamlit run llmquery_app.py
+python -m streamlit run llmquery_app.py
 ```
 
 ---
 
-## Requirements
 
-```
-pip install -r requirements.txt
-```
 
 TensorRT requires the NVIDIA TensorRT SDK installed separately. For the query app, either Ollama running locally or a Groq API key (free at console.groq.com).
