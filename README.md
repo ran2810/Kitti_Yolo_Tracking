@@ -24,17 +24,25 @@ google_collab_training_trigger.ipynb     # end-to-end Colab notebook
 
 Downloads the KITTI dataset, converts labels between KITTI and YOLO formats, trains a YOLO model on Google Colab, and evaluates with mAP50/mAP50-95. The notebook `google_collab_training_trigger.ipynb` sequences all steps end-to-end on Colab GPU.
 
-Pipeline order:
+The pipeline is split between Colab (GPU steps) and local (everything else).
+
+Colab — `google_collab_training_trigger.ipynb`:
 ```
 download_kittidataset.py        # fetches images + labels into data/training/
 label_convertor.py kitti2yolo   # converts labels, splits into train/val -> kitti_yolo/
-                                # train YOLO (run inside notebook)
+                                # train YOLO
 evaluate_yolo.py                # mAP50, mAP50-95 on val set
 visualize_predictions.py        # side-by-side GT vs prediction for one image
 benchmark_model.py              # FP32/FP16/INT8 across CPU, GPU, TensorRT
                                 # run YOLO predict on data/training/image_2/
-label_convertor.py yolo2kitti   # converts predictions back to KITTI format
+                                #   -> saves YOLO-format labels to runs/detect/predict/labels/
+```
+
+Local (run after syncing `runs/` from Google Drive):
+```
+label_convertor.py yolo2kitti   # converts prediction labels to KITTI format
 generate_faiss_doc.py           # builds scene + error FAISS indexes and CLIP indexes
+llmquery_app.py                 # Streamlit query app
 ```
 
 ---
@@ -98,7 +106,7 @@ User Query
 
 Both Scene Search and Error Analysis go through the same resolution path. First, the query is checked against `fuzzy_rules.json` — terms like "crowded", "few cyclists", "heavy occlusion" are pre-mapped to exact numeric filters with synonyms. If the query is fully covered by fuzzy rules (after stripping stopwords with no filter intent), the LLM is skipped entirely and filters are applied directly. The UI shows "fuzzy rules only — LLM skipped" in this case.
 
-If fuzzy rules don't cover everything, the query goes to the LLM. Two backends are supported and switchable at runtime from the sidebar: Ollama (local, private, no API key) and Groq (cloud, ~10x faster, free tier). The LLM returns structured filters which are applied against the FAISS index. If nothing matches, it falls back to sentence-transformer semantic search over the same index.
+If fuzzy rules don't cover everything, the query goes to the LLM. Two backends are supported and switchable at runtime from the sidebar: Ollama (local, private, no API key) and Groq (cloud, ~10x faster). The LLM returns structured filters which are applied against the FAISS index. If nothing matches, it falls back to sentence-transformer semantic search over the same index.
 
 Error Analysis results include a side-by-side overlay: GT boxes in green, predictions in yellow, false positives in red, false negatives in blue.
 
@@ -127,6 +135,18 @@ Both modes support two CLIP models selectable from the sidebar. ViT-B-32 is fast
 "pedestrian crossing sign"
 "road with tram tracks"
 "construction worker near vehicle"
+```
+
+### FiftyOne integration
+
+After any text query returns results, an "Open in FiftyOne" button appears below the frames. Clicking it launches the FiftyOne app at `http://localhost:5151` showing only the matched frames with GT bounding box labels overlaid.
+
+On first click, FiftyOne ingests the full KITTI training set (images + labels from `data/training/`) into a persistent local dataset named `kitti`. Subsequent clicks are instant — the dataset is already loaded and only the view changes to match the current query results.
+
+This is useful for visually reviewing edge cases, tagging frames, and curating subsets before retraining.
+
+```
+pip install fiftyone      # one-time install
 ```
 
 ### Running the app

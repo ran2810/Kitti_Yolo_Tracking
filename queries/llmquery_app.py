@@ -9,12 +9,24 @@ import re
 import cv2
 from pathlib import Path
 
-# check groq availability 
+# check groq availability
 try:
     from groq import Groq
     GROQ_AVAILABLE = True
 except ImportError:
     GROQ_AVAILABLE = False
+
+# check fiftyone availability
+try:
+    import fiftyone as fo
+    from fiftyone import ViewField as F
+    FIFTYONE_AVAILABLE = True
+except Exception as _fo_err:
+    # catches ImportError and any init errors (mongodb, C extensions, etc.)
+    print(f"FiftyOne not available: {_fo_err}")
+    FIFTYONE_AVAILABLE = False
+
+print ("fiftyone available: ", FIFTYONE_AVAILABLE)
 
 # enable print debug statements
 print_debug = True
@@ -458,6 +470,40 @@ def load_rag_clip(clip_model_label: str):
 
 
 # ---------------------------------------------------------
+# FIFTYONE INTEGRATION
+# ---------------------------------------------------------
+@st.cache_resource
+def load_fo_dataset():
+    """Load KITTI training set into FiftyOne once. Persistent so re-runs are instant."""
+    if fo.dataset_exists("kitti"):
+        return fo.load_dataset("kitti")
+    return fo.Dataset.from_dir(
+        dataset_type=fo.types.KITTIDetectionDataset,
+        data_path=str(parent_dir / "data" / "training" / "image_2"),
+        labels_path=str(parent_dir / "data" / "training" / "label_2"),
+        name="kitti",
+        persistent=True,
+    )
+
+def open_in_fiftyone(result_docs, id_field="id"):
+    """Build a FiftyOne view from result frame IDs and launch the app on port 5151."""
+    dataset = load_fo_dataset()
+    # deduplicate frame IDs while preserving result order
+    ids = list(dict.fromkeys(d[id_field] for d in result_docs))
+    abs_paths = [
+        str(parent_dir / "data" / "training" / "image_2" / f"{fid}.png")
+        for fid in ids
+    ]
+    view = dataset.select_by("filepath", abs_paths, ordered=True)
+    # reuse existing session if already open, otherwise launch new one
+    if "fo_session" not in st.session_state or st.session_state.fo_session is None:
+        st.session_state.fo_session = fo.launch_app(view)
+    else:
+        st.session_state.fo_session.view = view
+    return len(ids)
+
+
+# ---------------------------------------------------------
 # CLIP VISUAL SEARCH
 # ---------------------------------------------------------
 # get image query embedding
@@ -735,6 +781,10 @@ if query:
             else:
                 # scene search -> just show the raw image
                 st.image(img_path)
+        # open result frames in FiftyOne for curation
+        if FIFTYONE_AVAILABLE and st.button("Open in FiftyOne", key="fo_filter"):
+            n = open_in_fiftyone(filtered_docs[:top_k])
+            st.success(f"FiftyOne opened with {n} frames -> http://localhost:5151")
         st.stop()
 
     if query_filters:
@@ -757,6 +807,10 @@ if query:
                      caption="GT (left) vs Predictions (right)")
         # scene mode -> just show the raw image
         st.image(img_path)
+    # open semantic result frames in FiftyOne for curation
+    if FIFTYONE_AVAILABLE and st.button("Open in FiftyOne", key="fo_semantic"):
+        n = open_in_fiftyone(results)
+        st.success(f"FiftyOne opened with {n} frames → http://localhost:5151")
 
 # ---------------------------------------------------------
 # CLIP VISUAL SEARCH (modes: text -> image or image -> image)
