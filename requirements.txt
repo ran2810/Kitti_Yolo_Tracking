@@ -2,13 +2,21 @@
 # Install with: pip install -r requirements.txt
 # TensorRT requires the NVIDIA TensorRT SDK installed separately.
 # Ollama (local LLM) install separately from https://ollama.com
+#
+# PyTorch: requirements.txt defaults to CPU-only (--extra-index-url below).
+# For GPU training swap to the Colab notebook — it handles its own torch install.
+# To install GPU version locally instead:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+# Pull CPU-only torch wheels from PyTorch index (smaller download, no CUDA libs)
+# --extra-index-url https://download.pytorch.org/whl/cpu
 
 # ---------------------------------------------------------
 # Streamlit RAG query app
 # ---------------------------------------------------------
 streamlit==1.58.0
 faiss-cpu==1.14.3
-sentence-transformers==5.6.0
+sentence-transformers
 groq==1.5.0
 PyYAML==6.0.3
 
@@ -22,32 +30,31 @@ dask
 # ---------------------------------------------------------
 opencv-python==4.13.0.92
 Pillow==12.2.0
-matplotlib==3.11.0
+matplotlib==3.10.9
 
 # ---------------------------------------------------------
-# ML core
+# ML core (CPU-only via --extra-index-url above)
 # ---------------------------------------------------------
-torch==2.12.1
-torchvision==0.27.1
-transformers==5.12.1
-accelerate==1.14.0
-tokenizers==0.22.2
-safetensors==0.8.0
-huggingface_hub==1.21.0
+torch
+torchvision
+transformers
+accelerate
+tokenizers
+safetensors
+huggingface_hub
 
 # ---------------------------------------------------------
-# YOLO (used in Colab for training/eval; also needed locally
-# for visualize_predictions.py and evaluate_yolo.py)
+# YOLO
 # ---------------------------------------------------------
 ultralytics
 
 # ---------------------------------------------------------
 # Data / numerics
 # ---------------------------------------------------------
-numpy==2.5.0
-pandas==3.0.3
-scipy==1.18.0
-scikit-learn==1.9.0
+numpy
+pandas
+scipy
+scikit-learn
 
 # ---------------------------------------------------------
 # HTTP / utilities

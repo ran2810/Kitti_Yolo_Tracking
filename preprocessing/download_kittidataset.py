@@ -2,6 +2,7 @@ import os
 import zipfile
 import requests
 from pathlib import Path
+from tqdm import tqdm
 import cv2
 import matplotlib.pyplot as plt
 from ultralytics import YOLO
@@ -27,14 +28,26 @@ def download_kitti(output_dir="data"):
 
         print(f"Downloading {filename}...")
         r = requests.get(url, stream=True)
-        with open(out_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=1024):
+        total = int(r.headers.get("content-length", 0))
+        with open(out_path, "wb") as f, tqdm(
+            desc=filename,
+            total=total,
+            unit="B",
+            unit_scale=True,
+            unit_divisor=1024,
+        ) as bar:
+            for chunk in r.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
+                    bar.update(len(chunk))
 
         print(f"Extracting {filename}...")
         with zipfile.ZipFile(out_path, "r") as zip_ref:
-            zip_ref.extractall(output_dir)
+            members = zip_ref.namelist()
+            with tqdm(total=len(members), desc=f"Extracting", unit="file") as bar:
+                for member in members:
+                    zip_ref.extract(member, output_dir)
+                    bar.update(1)
 
     print("KITTI dataset ready!")
 
