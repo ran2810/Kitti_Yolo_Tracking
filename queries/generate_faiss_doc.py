@@ -1,9 +1,16 @@
-import os, json
+import os, json, time
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from PIL import Image
 import faiss
 from tqdm import tqdm
+
+test_parallelism = False
+
+if test_parallelism:
+    from concurrent.futures import ThreadPoolExecutor
+    import dask.bag as db
+    from functools import partial
 
 # ------------------------------------------------------------
 # KITTI PARSER 
@@ -202,7 +209,9 @@ def generate_error_docs(frame_ids, label_dir, pred_dir, image_dir):
 
     return error_docs
 
-
+def build_docs_batch(fids, label_dir, image_dir):
+    # one Dask task processes a whole batch
+    return [build_doc(fid, label_dir, image_dir) for fid in fids]
 # ------------------------------------------------------------
 # MAIN INDEX BUILDER
 # ------------------------------------------------------------
@@ -213,13 +222,54 @@ def build_kitti_index(label_dir, image_dir, pred_dir):
 
     frame_ids = [f.split(".")[0] for f in os.listdir(label_dir)]
 
+    # tested parallelism but sequential for loop wins due to local files and not CPU-heavy
+    if test_parallelism:
+        # Use dask per frame - 11066 ms 
+        t0 = time.perf_counter()
+        _build = partial(build_doc, label_dir=label_dir, image_dir=image_dir)
+        n_parts = min(os.cpu_count() or 4, len(frame_ids))
+        scene_docs = (
+            db.from_sequence(frame_ids, npartitions=n_parts)
+            .map(_build)
+            .compute()
+        )
+        db_latency_ms = (time.perf_counter() - t0) * 1000
+        print(f"\ndask frame-wise latency: {db_latency_ms:.0f} ms")
+
+        # Use batch dask - 10724ms
+        batch_size = 500
+        batches = [frame_ids[i:i+batch_size] for i in range(0, len(frame_ids), batch_size)]
+        _build_batch = partial(build_docs_batch, label_dir=label_dir, image_dir=image_dir)
+
+        t0 = time.perf_counter()
+        scene_docs = (
+            db.from_sequence(batches, npartitions=len(batches))
+            .map(_build_batch)
+            .flatten()
+            .compute()
+        )
+        db_batch_latency_ms = (time.perf_counter() - t0) * 1000
+        print(f"\ndask batch processing latency: {db_batch_latency_ms:.0f} ms")
+
+        # ThreadPoolExecutor - 1560ms
+        t0 = time.perf_counter()
+        _build = partial(build_doc, label_dir=label_dir, image_dir=image_dir)
+        with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
+            scene_docs = list(pool.map(_build, frame_ids))
+        Threadpool_latency_ms = (time.perf_counter() - t0) * 1000
+        print(f"\nThreadPoolExecutor latency: {Threadpool_latency_ms:.0f} ms")
+
     # -------------------------
     # Scene documents
     # -------------------------
+    # sequential for loop - 1075ms
+    t0 = time.perf_counter()
     scene_docs = []
     for fid in frame_ids:
         doc = build_doc(fid, label_dir, image_dir)
         scene_docs.append(doc)
+    forloop_latency_ms = (time.perf_counter() - t0) * 1000
+    print(f"\nfor loop reading latency: {forloop_latency_ms:.0f} ms")
 
     model = SentenceTransformer("all-MiniLM-L6-v2")
     summary_texts  = []
@@ -332,6 +382,7 @@ if __name__ == "__main__":
         scene_docs, scene_index, error_docs, error_index, model = build_kitti_index(
             label_dir, image_dir, pred_dir
         )
+        
         # write scenes files -> .json doc and index(.faiss) 
         with open("../data/kitti_docs.json", "w") as f:
             json.dump(scene_docs, f, indent=2)
