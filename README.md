@@ -2,6 +2,8 @@
 
 An end-to-end pipeline built on the KITTI autonomous driving dataset, covering three phases: training a YOLO model from raw sensor data, benchmarking it across deployment targets, and building a natural language query system for scenario mining and error analysis.
 
+[Architecture diagram](architecture/Kitti-Yolo-Rag-pipeline.drawio)
+
 ---
 
 ## Repository Structure
