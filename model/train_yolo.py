@@ -7,34 +7,25 @@ from ultralytics import YOLO
 # ------------------------------------------------------------
 def train(
     model_path="model/yolov8n.pt",
-    data="data/kitti.yaml",
-    epochs=50,
-    imgsz=640,
-    batch=16,
-    device="0",
-    resume=False,
+    data="data/kitti.yaml", # path to dataset # path to dataset yaml
+    epochs=50,              # number of training epochs
+    imgsz=640,              # input image size
+    batch=16,               # batch size
+    device="0",             # device as GPU or cpu
+    resume=False,           # resume from last checkpoint if true
 ):
     """
     Train YOLOv8 on KITTI dataset.
-
-    Args:
-        model_path: pretrained weights to start from (yolov8n/s/m/l/x.pt)
-        data:       path to dataset YAML
-        epochs:     number of training epochs
-        imgsz:      input image size
-        batch:      batch size (-1 = auto)
-        device:     "0" for GPU 0, "cpu" for CPU, "0,1" for multi-GPU
-        resume:     resume from last checkpoint if True
     """
     model = YOLO(model_path)
 
     results = model.train(
-        data=data,
-        epochs=epochs,
-        imgsz=imgsz,
-        batch=batch,
-        device=device,
-        resume=resume,
+        data=data,      
+        epochs=epochs,  
+        imgsz=imgsz,    
+        batch=batch,    
+        device=device,  
+        resume=resume,  
     )
 
     best = results.save_dir / "weights" / "best.pt"

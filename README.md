@@ -11,6 +11,8 @@ An end-to-end pipeline built on the KITTI autonomous driving dataset, covering t
 ```
 preprocessing/download_kittidataset.py   # dataset download
 preprocessing/label_convertor.py         # KITTI <-> YOLO label conversion
+model/train_yolo.py                      # YOLOv8 training script
+model/predict_yolo.py                    # run inference, save YOLO-format labels
 model/evaluate_yolo.py                   # mAP evaluation
 model/benchmark_model.py                 # FP32/FP16/INT8 benchmarking
 utils/visualize_predictions.py           # GT vs prediction overlay
@@ -39,20 +41,35 @@ The pipeline is split between Colab (GPU steps) and local (everything else).
 
 Colab — `google_collab_training.ipynb`:
 ```
-download_kittidataset.py        # fetches images + labels into data/training/
-label_convertor.py kitti2yolo   # converts labels, splits into train/val -> kitti_yolo/
-                                # train YOLO
-evaluate_yolo.py                # mAP50, mAP50-95 on val set
-visualize_predictions.py        # side-by-side GT vs prediction for one image
-benchmark_model.py              # FP32/FP16/INT8 across CPU, GPU, TensorRT
-                                # run YOLO predict on data/training/image_2/
-                                #   -> saves YOLO-format labels to runs/detect/predict/labels/
+# fetches images + labels into data/training/
+download_kittidataset.py 
+
+# converts labels, splits into train/val -> kitti_yolo/
+label_convertor.py "kitti2yolo"   
+
+# train YOLO
+train_yolo.py --model model/yolov8n.pt --data data/kitti.yaml --epochs 50 --imgsz 640 --batch 16 --device 0 
+
+# mAP50, mAP50-95 on val set (can also be triggered locally)
+evaluate_yolo.py --model "runs/detect/train/weights/best.pt" --data "data/kitti.yaml" 
+
+# FP32/FP16/INT8 across CPU, GPU, TensorRT
+benchmark_model.py --model "runs/detect/train/weights/best.pt" --data "data/kitti.yaml"
 ```
 
 Local (run after syncing `runs/` from Google Drive):
 ```
-label_convertor.py yolo2kitti   # converts prediction labels to KITTI format
-generate_faiss_doc.py           # builds scene + error FAISS indexes and CLIP indexes
+# side-by-side GT vs prediction for one image
+visualize_predictions.py        
+
+# saves YOLO-format labels to runs/detect/predict/labels/
+predict_yolo.py --model "runs/detect/train/weights/best.pt" --source data/training/image_2 --project runs/detect --name predict
+
+# converts prediction labels to KITTI format
+label_convertor.py "yolo2kitti"  
+
+# builds scene + error FAISS indexes and CLIP indexes
+generate_faiss_doc.py           
 llmquery_app.py                 # Streamlit query app
 ```
 
@@ -68,7 +85,7 @@ Benchmarks the trained model across CPU, GPU (PyTorch), and TensorRT at FP32, FP
 | CPU          | INT8      | 0.8682 | 717.26       |
 | GPU          | FP32      | 0.8648 | 14.29        |
 | GPU          | FP16      | 0.8647 | 15.16        |
-| TensorRT     | FP32      | 0.8682 | 0.39         |
+| TensorRT     | FP32      | 0.8682 | **0.39**     |
 | TensorRT     | FP16      | 0.8682 | 0.40         |
 | TensorRT     | INT8      | 0.8682 | 0.40         |
 
@@ -176,9 +193,9 @@ Both modes support two CLIP models selectable from the sidebar. ViT-B-32 is fast
 ### Running the app
 
 ```
-ollama run llama3                                  # skip if using Groq
+ollama run llama3    # skip if using Groq
 cd queries
-python -m streamlit run llmquery_app.py
+streamlit run .\llmquery_app.py
 ```
 
 ---

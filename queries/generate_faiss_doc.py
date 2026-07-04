@@ -4,6 +4,7 @@ from sentence_transformers import SentenceTransformer
 from PIL import Image
 import faiss
 from tqdm import tqdm
+from pathlib import Path
 
 test_parallelism = False
 
@@ -373,9 +374,12 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    label_dir = "../data/training/label_2"
-    image_dir = "../data/training/image_2"
-    pred_dir  = "../runs/detect/predict/kitti_labels"
+    # get parent dir to join with images path
+    current_dir = Path(__file__).resolve().parent
+    parent_dir = current_dir.parent
+    label_dir = parent_dir / "data" / "training" / "label_2"
+    image_dir = parent_dir / "data" / "training" / "image_2"
+    pred_dir  = parent_dir / "runs" / "detect" / "predict" / "kitti_labels"
 
     # Text indexes (scene + error) 
     if not args.skip_text:
@@ -383,19 +387,19 @@ if __name__ == "__main__":
             label_dir, image_dir, pred_dir
         )
         
-        # write scenes files -> .json doc and index(.faiss) 
-        with open("../data/kitti_docs.json", "w") as f:
+        # write scenes files -> .json doc and index(.faiss)
+        with open(parent_dir / "data" / "kitti_docs.json", "w") as f:
             json.dump(scene_docs, f, indent=2)
-        faiss.write_index(scene_index, "../data/kitti_index.faiss")
+        faiss.write_index(scene_index, parent_dir / "data" / "kitti_index.faiss")
 
         # write error files -> .json doc and index(.faiss) 
-        with open("../data/error_docs.json", "w") as f:
+        with open(parent_dir / "data" / "error_docs.json", "w") as f:
             json.dump(error_docs, f, indent=2)
         if error_index:
-            faiss.write_index(error_index, "../data/error_index.faiss")
+            faiss.write_index(error_index, parent_dir / "data" / "error_index.faiss")
 
         # write model name
-        with open("../data/embedding_model.txt", "w") as f:
+        with open(parent_dir / "data" / "embedding_model.txt", "w") as f:
             f.write("all-MiniLM-L6-v2")
         print("Text indexes saved.")
     else:
@@ -403,8 +407,8 @@ if __name__ == "__main__":
 
     # CLIP image index 
     tag = _model_tag(args.clip_model)
-    index_path = f"../data/clip_index_{tag}.faiss"
-    ids_path   = f"../data/clip_frame_ids_{tag}.json"
+    index_path = parent_dir / "data" / f"clip_index_{tag}.faiss" 
+    ids_path   = parent_dir / "data" / f"clip_frame_ids_{tag}.json"
 
     # get index and frame_ids files
     clip_frame_ids, clip_index = build_clip_index(image_dir, args.clip_model)
