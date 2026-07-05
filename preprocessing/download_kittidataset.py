@@ -3,10 +3,6 @@ import zipfile
 import requests
 from pathlib import Path
 from tqdm import tqdm
-import cv2
-import matplotlib.pyplot as plt
-from ultralytics import YOLO
-
 
 # DOWNLOAD KITTI DATASET (IMAGES + LABELS)
 def download_kitti(output_dir="data"):
@@ -54,6 +50,8 @@ def download_kitti(output_dir="data"):
 
 # VISUALIZE KITTI GROUND TRUTH LABELS
 def visualize_kitti_sample(image_path, label_path):
+    import cv2
+    import matplotlib.pyplot as plt
     img = cv2.imread(image_path)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
@@ -82,9 +80,3 @@ def parse_kitti_label(line):
 
 if __name__ == "__main__":
     download_kitti()
-
-    # sample_img = "kitti/training/image_2/000000.png"
-    # sample_label = "kitti/training/label_2/000000.txt"
-
-    # print("Visualizing KITTI ground truth...")
-    # visualize_kitti_sample(sample_img, sample_label)

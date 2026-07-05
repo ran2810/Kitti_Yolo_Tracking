@@ -18,7 +18,7 @@ model/benchmark_model.py                 # FP32/FP16/INT8 benchmarking
 utils/visualize_predictions.py           # GT vs prediction overlay
 queries/generate_faiss_doc.py            # builds FAISS indexes
 queries/llmquery_app.py                  # Streamlit query app
-queries/fuzzy_rules.json                 # synonym + filter rules for fuzzy matching
+data/fuzzy_rules.json                    # synonym + filter rules for fuzzy matching
 data/                                    # generated indexes, docs, configs
 data/datasets/                           # exported YAML dataset manifests
 google_collab_training.ipynb             # end-to-end Colab notebook
@@ -69,8 +69,10 @@ predict_yolo.py --model "runs/detect/train/weights/best.pt" --source data/traini
 label_convertor.py "yolo2kitti"  
 
 # builds scene + error FAISS indexes and CLIP indexes
-generate_faiss_doc.py           
-llmquery_app.py                 # Streamlit query app
+generate_faiss_doc.py  
+
+# Streamlit query app & export query results as yaml dataset
+llmquery_app.py                
 ```
 
 ---
@@ -131,6 +133,7 @@ User Query
                     |--> CLIP image encode --> mean embedding
                     └--> ViT-B-32 or ViT-L-14 index search
 ```
+---
 
 ### Text query details
 

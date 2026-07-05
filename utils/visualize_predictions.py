@@ -1,7 +1,8 @@
-from ultralytics import YOLO
+import argparse
 import glob
 import cv2
 import matplotlib.pyplot as plt
+from ultralytics import YOLO
 
 # helper functions to draw YOLO boxes
 def draw_yolo_boxes(img, labels, class_names, color=(0,255,0)):
@@ -40,14 +41,21 @@ def load_yolo_label(label_path):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Visualize GT vs YOLO predictions side-by-side")
+    parser.add_argument("--model",   default="runs/detect/train/weights/best.pt",
+                        help="Path to model weights (default: runs/detect/train/weights/best.pt)")
+    parser.add_argument("--img-dir", default="kitti_yolo/images/val",
+                        help="Directory of validation images (default: kitti_yolo/images/val)")
+    args = parser.parse_args()
+
     # Load model
-    model = YOLO("runs/detect/train/weights/best.pt")
+    model = YOLO(args.model)
 
     # Class names (KITTI subset)
     CLASSES = ["Car", "Pedestrian", "Cyclist"]
 
-    # Pick a validation image
-    img_path = sorted(glob.glob("kitti_yolo/images/val/*.png"))[0]
+    # Pick first validation image from img-dir
+    img_path = sorted(glob.glob(f"{args.img_dir}/*.png"))[0]
     label_path = img_path.replace("images", "labels").replace(".png", ".txt")
 
     # Load image + ground truth

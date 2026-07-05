@@ -239,10 +239,10 @@ def evaluate_int8_cpu(model_path, data_yaml):
 
     print("\n=== INT8 Evaluation (ONNX Runtime) ===")
 
-    int8_model = YOLO("runs/detect/train/weights/best.onnx")
+    int8_model = YOLO(int8_path)
 
     int8_metrics = int8_model.val(
-        data="kitti.yaml",
+        data=data_yaml,
         imgsz=640,
         batch=1,
         device="cpu"
