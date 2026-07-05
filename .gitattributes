@@ -4,3 +4,4 @@
 *.pt filter=lfs diff=lfs merge=lfs -text
 *.jpg filter=lfs diff=lfs merge=lfs -text
 *.png filter=lfs diff=lfs merge=lfs -text
+searchad/searchad_annotations_train.json filter=lfs diff=lfs merge=lfs -text

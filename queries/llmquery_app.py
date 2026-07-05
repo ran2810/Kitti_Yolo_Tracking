@@ -456,12 +456,21 @@ def load_rag():
             clip_frame_ids = json.load(f)
         clip_model = SentenceTransformer("clip-ViT-B-32")
 
+    # Caption text index (optional — built by build_caption_index.py after Colab)
+    caption_index, caption_docs_list = None, []
+    if os.path.exists("../data/caption_index.faiss"):
+        caption_index = faiss.read_index("../data/caption_index.faiss")
+        with open("../data/caption_docs.json") as f:
+            caption_docs_list = json.load(f)
+
     return scene_docs, scene_index, error_docs, error_index, model, \
-           clip_index, clip_frame_ids, clip_model
+           clip_index, clip_frame_ids, clip_model, \
+           caption_index, caption_docs_list
 
 
 scene_docs, scene_index, error_docs, error_index, emb_model, \
-    clip_index, clip_frame_ids, clip_model = load_rag()
+    clip_index, clip_frame_ids, clip_model, \
+    caption_index, caption_docs_list = load_rag()
 
 # Build mode example embeddings once at startup (reuses already-loaded emb_model)
 mode_embeddings = build_mode_embeddings(emb_model)
@@ -582,6 +591,90 @@ def clip_search(query_emb, clip_index, clip_frame_ids, scene_docs, top_k=10):
             "summary_text": doc.get("summary_text", ""),
         })
     return results
+
+
+def caption_search(text_query, caption_index, caption_docs_list, emb_model, top_k=50):
+    """
+    Search the caption FAISS index (L2) by text query.
+    Returns results with score = 1/(1+dist) so higher is better.
+
+    :param text_query: user text string
+    :param caption_index: IndexFlatL2 built by build_caption_index.py
+    :param caption_docs_list: list of caption doc dicts
+    :param emb_model: SentenceTransformer (all-MiniLM-L6-v2, already loaded)
+    :param top_k: number of candidates
+    :return: list of dicts with frame_id, caption, image_path, caption_score
+    """
+    q_emb = emb_model.encode([text_query], convert_to_numpy=True).astype("float32")
+    D, I = caption_index.search(q_emb, top_k)
+
+    results = []
+    for dist, idx in zip(D[0], I[0]):
+        if idx < 0:
+            continue
+        d = caption_docs_list[idx]
+        results.append({
+            "frame_id":    d["frame_id"],
+            "caption":     d["caption"],
+            "image_path":  d["image_path"],
+            "summary_text": d.get("summary_text", ""),
+            "caption_score": 1.0 / (1.0 + float(dist)),  # higher = more similar
+        })
+    return results
+
+
+def hybrid_merge(clip_results, caption_results, top_k=10, alpha=0.5):
+    """
+    Merge CLIP visual scores and caption text scores into a single ranked list.
+
+    Both score columns are min-max normalised to [0,1] independently,
+    then combined: hybrid = alpha * clip_norm + (1-alpha) * caption_norm.
+
+    :param clip_results:    list from clip_search()    (field: "score")
+    :param caption_results: list from caption_search() (field: "caption_score")
+    :param top_k:  how many results to return
+    :param alpha:  weight for CLIP visual score (0.5 = equal weight)
+    :return: top_k merged result dicts with hybrid_score, clip_norm, caption_norm
+    """
+    # Min-max normalise CLIP scores (IndexFlatIP, higher = better)
+    clip_vals   = [r["score"] for r in clip_results]
+    clip_min, clip_max = (min(clip_vals), max(clip_vals)) if clip_vals else (0.0, 1.0)
+    clip_range  = clip_max - clip_min or 1.0
+
+    # Min-max normalise caption scores (1/(1+L2), higher = better)
+    cap_vals    = [r["caption_score"] for r in caption_results]
+    cap_min, cap_max = (min(cap_vals), max(cap_vals)) if cap_vals else (0.0, 1.0)
+    cap_range   = cap_max - cap_min or 1.0
+
+    clip_norm_by_id    = {r["frame_id"]: (r["score"] - clip_min) / clip_range
+                          for r in clip_results}
+    caption_norm_by_id = {r["frame_id"]: (r["caption_score"] - cap_min) / cap_range
+                          for r in caption_results}
+
+    # Union of frame IDs from both result sets
+    all_ids = set(clip_norm_by_id) | set(caption_norm_by_id)
+
+    # Keep one doc per frame_id (prefer clip_results which has image_path)
+    id_to_doc = {r["frame_id"]: r for r in reversed(caption_results)}
+    id_to_doc.update({r["frame_id"]: r for r in clip_results})
+
+    # Lookup caption text by frame_id
+    cap_text_by_id = {r["frame_id"]: r["caption"] for r in caption_results}
+
+    merged = []
+    for fid in all_ids:
+        cn = clip_norm_by_id.get(fid, 0.0)
+        cap = caption_norm_by_id.get(fid, 0.0)
+        final = alpha * cn + (1.0 - alpha) * cap
+        doc = id_to_doc[fid].copy()
+        doc["hybrid_score"]  = final
+        doc["clip_norm"]     = cn
+        doc["caption_norm"]  = cap
+        doc["caption"]       = cap_text_by_id.get(fid, "")
+        merged.append(doc)
+
+    merged.sort(key=lambda x: x["hybrid_score"], reverse=True)
+    return merged[:top_k]
 
 # ------------------------------------------------------------
 # VISUALIZATION HELPERS
@@ -869,28 +962,80 @@ else:
     )
     clip_top_k = st.slider("Visual results", 1, 10, 5, key="clip_k")
 
-    # Text -> Images 
-    # works with full frame level context only but not minor object like - pedestrian crossing sign or . 
+    # Text -> Images
     if clip_search_mode == "Text -> Images":
+        # Show hybrid notice if caption index is ready
+        if caption_index is not None:
+            st.success(
+                f"Caption index loaded ({len(caption_docs_list):,} frames). "
+                "Hybrid search active: CLIP visual + caption text scores merged."
+            )
+        else:
+            st.info(
+                "Caption index not found — using CLIP-only search.  \n"
+                "Run `colab_generate_captions.py` on Colab, then `build_caption_index.py` "
+                "locally to enable hybrid search (better for small objects & signs)."
+            )
+
         clip_text_query = st.text_input(
-            "Describe what you want to find visually -- full frame level context only",
-            placeholder="e.g. traffic light, parked vehicles, frames with railway tracks, road with tram line",
+            "Describe what you want to find visually",
+            placeholder="e.g. construction worker, pedestrian crossing sign, road with tram tracks",
             key="clip_text"
         )
-        # run query, calculate latency and display top k results
+
+        # Alpha slider only shown when hybrid is active
+        if caption_index is not None:
+            alpha = st.slider(
+                "Hybrid weight  (1.0 = CLIP only  |  0.0 = Caption only)",
+                min_value=0.0, max_value=1.0, value=0.5, step=0.1,
+                key="hybrid_alpha"
+            )
+        else:
+            alpha = 1.0
+
         if clip_text_query:
             t0 = time.perf_counter()
-            q_emb = clip_encode_text(clip_text_query, clip_model)
-            latency_ms = (time.perf_counter() - t0) * 1000
-            results = clip_search(q_emb, clip_index, clip_frame_ids, scene_docs, clip_top_k)
-            st.caption(f" CLIP text encode + search — {latency_ms:.0f} ms")
 
-            st.markdown(f"**Top {clip_top_k} visually similar frames:**")
+            # ── CLIP visual path ──────────────────────────────────────────────
+            q_emb = clip_encode_text(clip_text_query, clip_model)
+            # Fetch larger candidate pool for re-ranking when hybrid is active
+            clip_pool = clip_top_k * 5 if caption_index is not None else clip_top_k
+            clip_results = clip_search(q_emb, clip_index, clip_frame_ids, scene_docs, clip_pool)
+
+            # ── Caption text path (if available) ─────────────────────────────
+            if caption_index is not None:
+                cap_results = caption_search(
+                    clip_text_query, caption_index, caption_docs_list,
+                    emb_model, top_k=clip_top_k * 5
+                )
+                results = hybrid_merge(clip_results, cap_results, top_k=clip_top_k, alpha=alpha)
+                search_type = "Hybrid (CLIP + Caption)"
+            else:
+                results = clip_results[:clip_top_k]
+                search_type = "CLIP text"
+
+            latency_ms = (time.perf_counter() - t0) * 1000
+            color = "green" if latency_ms < 500 else ("orange" if latency_ms < 2000 else "red")
+            st.caption(f"{search_type} — :{color}[{latency_ms:.0f} ms]")
+
+            st.markdown(f"**Top {clip_top_k} results:**")
             for r in results:
-                image_path = Path(*Path(r["image_path"]).parts[1:]) # Drop the leading ".."
+                image_path = Path(*Path(r["image_path"]).parts[1:])
                 img_path = parent_dir / image_path
-                st.subheader(f"Frame {r['frame_id']}  —  score {r['score']:.3f}")
-                st.caption(r["summary_text"])
+
+                if caption_index is not None:
+                    # Show hybrid score breakdown
+                    score_label = (
+                        f"hybrid {r['hybrid_score']:.3f}  "
+                        f"(clip {r['clip_norm']:.3f}  cap {r['caption_norm']:.3f})"
+                    )
+                    st.subheader(f"Frame {r['frame_id']}  —  {score_label}")
+                    if r.get("caption"):
+                        st.caption(f"Caption: {r['caption']}")
+                else:
+                    st.subheader(f"Frame {r['frame_id']}  —  score {r['score']:.3f}")
+
+                st.caption(r.get("summary_text", ""))
                 st.image(img_path)
 
     #  Image -> Images 
