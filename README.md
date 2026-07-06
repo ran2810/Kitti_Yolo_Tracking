@@ -91,7 +91,7 @@ Benchmarks the trained model across CPU, GPU (PyTorch), and TensorRT at FP32, FP
 | TensorRT     | FP16      | 0.8682 | 0.40         |
 | TensorRT     | INT8      | 0.8682 | 0.40         |
 
-TensorRT accuracy uses the ONNX model as a proxy — latency is measured from the actual TensorRT engine.
+TensorRT accuracy uses the ONNX model as a proxy. Latency is measured from the actual TensorRT engine.
 
 Relevant script: `model/benchmark_model.py`
 
@@ -99,7 +99,7 @@ Relevant script: `model/benchmark_model.py`
 
 ## Phase 3: RAG Query Pipeline
 
-A Streamlit app (`queries/llmquery_app.py`) for querying the KITTI dataset without writing filter code. It has two independent entry points — text-based query and visual CLIP search.
+A Streamlit app (`queries/llmquery_app.py`) for querying the KITTI dataset without writing filter code. It has two independent entry points: text-based query and visual CLIP query.
 
 `queries/generate_faiss_doc.py` builds the indexes first: a scene-level FAISS index (object counts, occlusion, truncation per frame), an error-level FAISS index (FP/FN documents with IoU, class, bounding box), and a CLIP image index for visual search. Run this once before launching the app.
 
@@ -137,7 +137,7 @@ User Query
 
 ### Text query details
 
-Both Scene Search and Error Analysis go through the same resolution path. First, the query is checked against `fuzzy_rules.json` — terms like "crowded", "few cyclists", "heavy occlusion" are pre-mapped to exact numeric filters with synonyms. If the query is fully covered by fuzzy rules (after stripping stopwords with no filter intent), the LLM is skipped entirely and filters are applied directly. The UI shows "fuzzy rules only — LLM skipped" in this case.
+Both Scene Search and Error Analysis go through the same resolution path. First, the query is checked against `fuzzy_rules.json` terms like "crowded", "few cyclists", "heavy occlusion" are pre-mapped to exact numeric filters with synonyms. If the query is fully covered by fuzzy rules (after stripping stopwords with no filter intent), the LLM is skipped entirely and filters are applied directly. The UI shows "fuzzy rules only — LLM skipped" in this case.
 
 If fuzzy rules don't cover everything, the query goes to the LLM. Two backends are supported and switchable at runtime from the sidebar: Ollama (local, private, no API key) and Groq (cloud, ~10x faster). Both run at temperature=0 for deterministic output. The LLM returns structured filters which are applied against the FAISS index. If nothing matches, it falls back to sentence-transformer semantic search over the same index.
 
@@ -164,15 +164,15 @@ frames:
   label: data/training/label_2/002445.txt
 ```
 
-This demonstrates the data lifecycle — natural language query to a reproducible, traceable frame subset — without coupling to a specific annotation tool.
+This demonstrates the data lifecycle natural language query to a reproducible, traceable frame subset without coupling to a specific annotation tool.
 
 ### Visual search details
 
-Text-to-image search encodes a text description directly with CLIP and finds the most visually similar frames. When Groq is active, the query is first expanded into a richer visual description before encoding — this helps with short queries like "pedestrian crossing sign" where the raw text doesn't encode enough visual detail.
+Text-to-image search encodes a text description directly with CLIP and finds the most visually similar frames. When Groq is active, the query is first expanded into a richer visual description before encoding. This helps with short queries like "pedestrian crossing sign" where the raw text doesn't encode enough visual detail.
 
 Image-to-image search takes one to five uploaded images, encodes each with CLIP, averages the embeddings, and retrieves the most similar frames. Multiple images make the query more robust.
 
-Both modes support two CLIP models selectable from the sidebar. ViT-B-32 is faster and works well for scene-level queries. ViT-L-14 uses 14x14 pixel patches instead of 32x32, giving finer spatial resolution — better for small objects like signs but slower.
+Both modes support two CLIP models selectable from the sidebar. ViT-B-32 is faster and works well for scene-level queries. ViT-L-14 uses 14x14 pixel patches instead of 32x32, giving finer spatial resolution .> better for small objects like signs but slower.
 
 ### Example queries
 
@@ -203,6 +203,64 @@ streamlit run .\llmquery_app.py
 
 ---
 
-
-
 TensorRT requires the NVIDIA TensorRT SDK installed separately. For the query app, either Ollama running locally or a Groq API key (free at console.groq.com).
+
+---
+
+## Querying Limitations — CLIP Visual Search
+
+CLIP encodes the full frame as a single embedding vector. For scene-level queries (object counts, road type, occlusion level) this works well. For small or visual objects like traffic signs, construction workers, road markings. The object signal is diluted by dominant scene content (road, sky, vehicles) and retrieval degrades significantly.
+
+**Summary KPIs (10 queries, top-5 results):**
+
+| Metric | ViT-L-14 | ViT-B-32 |
+|---|---|---|
+| Mean P@5 — all queries | 0.52 | **0.56** |
+| Mean P@5 — scene-level queries | 0.60 | **0.80** |
+| Mean P@5 — small object queries | **0.40** | 0.20 |
+| Complete failure (P@5 = 0) | 2 / 10 | 3 / 10 |
+| Hit Rate@5 | 0.80 | 0.80 |
+
+**Key findings:**
+- B-32 wins overall (Mean P@5 0.56 vs 0.52) and on scene-level queries (0.80 vs 0.60)
+- L-14 wins on small/specific objects (0.40 vs 0.20)
+- Both models fail completely on "construction workers" -> zero correct results in top-5 (lack of sufficient samples in training dataset)
+- Examples for scene-level queries: railway tracks, parked vehicles, traffic lights, construction cones, vehicles at traffic light,..
+- Examples for small object queries: pedestrian signs, speed signs,..
+- Examples for complete failure queries: construction workers,..
+
+
+**Approaches tried:**
+
+- **Query expansion (Groq):** expands short queries into rich visual descriptions before CLIP encoding. Marginal improvement for text-to-image -> does not fix the fundamental full-frame granularity issue.
+- **ViT-L-14 vs ViT-B-32:** finer patches improve small object recall marginally but full-frame encoding remains the bottleneck. However, both models switchable in the app sidebar.
+- **Caption-based hybrid:** attempted with Salesforce/blip2-opt-2.7b -> did not produce meaningful captions on KITTI frames. Salesforce/instructblip-flan-t5-xl was too large to run locally.
+
+**Recommended path — two-stage cropping:**
+
+KITTI labels only cover Car, Pedestrian, and Cyclist but no signs, cones, or construction workers,
+which are exactly the queries that fail (P@5 = 0). The box source for Stage 2 therefore depends
+on the query category:
+
+| Query category | Box source for Stage 2 |
+|---|---|
+| Car, Pedestrian, Cyclist | KITTI GT label files (already available) |
+| Signs, cones, construction workers | [OWL-ViT](https://arxiv.org/abs/2205.06230) zero-shot prediction |
+
+1. **Stage 1:**  full-frame CLIP FAISS search -> top-20 candidate frames (current implementation)
+2. **Stage 1.5:** *(out-of-vocabulary queries only)* run [OWL-ViT](https://arxiv.org/abs/2205.06230) on each candidate frame with the query as text input -> OWL-ViT predicts bounding boxes zero-shot. Frames with no detected box are dropped. Since only 20 frames are processed, compute cost is negligible.
+3. **Stage 2:** crop each region (GT box or OWL-ViT box), re-encode the crop with CLIP, re-rank candidates by crop-level similarity score.
+
+This hybrid avoids the need for a separate region proposal network for standard KITTI categories while extending coverage to rare out-of-vocabulary targets via zero-shot detection. See [RegionCLIP](https://arxiv.org/abs/2112.09106) (Microsoft, CVPR 2022) and
+[OWL-ViT](https://arxiv.org/abs/2205.06230) (Google, NeurIPS 2022) for the learned equivalents of this pipeline, and
+[SearchAD](https://arxiv.org/abs/2604.08008) (Mercedes-Benz / Esslingen, CVPR 2026):  a benchmark across 423k AD frames including KITTI, which confirms that spatial visual feature alignment outperforms full-frame CLIP for rare object retrieval.
+
+---
+
+## Next Steps
+
+- **FastAPI backend:** decouple query logic from Streamlit; FastAPI handles FAISS search, LLM routing, and CLIP encoding with multi-worker concurrency. Streamlit becomes a thin UI layer, enabling multiple simultaneous users.
+- **Qdrant:** replace FAISS for named vectors and pre-filtered HNSW; stores text and CLIP embeddings per frame in a single collection, enabling filtered vector search without post-filtering accuracy loss.
+- **RAG evaluation:** define ground-truth query→frame pairs; measure Precision@5, Recall@5, and per-query latency to benchmark retrieval quality objectively.
+- **Two-stage CLIP retrieval:** region-crop re-ranking (see Querying Limitations) to improve small object recall for signs, construction workers, and sparse targets.
+- **FiftyOne:**  dataset curation, label quality inspection, and structured export to annotation pipelines.
