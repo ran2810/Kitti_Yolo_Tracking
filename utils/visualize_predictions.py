@@ -1,7 +1,8 @@
-from ultralytics import YOLO
+import argparse
 import glob
 import cv2
 import matplotlib.pyplot as plt
+from ultralytics import YOLO
 
 # helper functions to draw YOLO boxes
 def draw_yolo_boxes(img, labels, class_names, color=(0,255,0)):
@@ -39,46 +40,54 @@ def load_yolo_label(label_path):
     return labels
 
 
-# Load model
-model = YOLO("runs/detect/train/weights/best.pt")
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Visualize GT vs YOLO predictions side-by-side")
+    parser.add_argument("--model",   default="runs/detect/train/weights/best.pt",
+                        help="Path to model weights (default: runs/detect/train/weights/best.pt)")
+    parser.add_argument("--img-dir", default="kitti_yolo/images/val",
+                        help="Directory of validation images (default: kitti_yolo/images/val)")
+    args = parser.parse_args()
 
-# Class names (KITTI subset)
-CLASSES = ["Car", "Pedestrian", "Cyclist"]
+    # Load model
+    model = YOLO(args.model)
 
-# Pick a validation image
-img_path = sorted(glob.glob("kitti_yolo/images/val/*.png"))[0]
-label_path = img_path.replace("images", "labels").replace(".png", ".txt")
+    # Class names (KITTI subset)
+    CLASSES = ["Car", "Pedestrian", "Cyclist"]
 
-# Load image + ground truth
-img = cv2.imread(img_path)
-img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-gt_labels = load_yolo_label(label_path)
+    # Pick first validation image from img-dir
+    img_path = sorted(glob.glob(f"{args.img_dir}/*.png"))[0]
+    label_path = img_path.replace("images", "labels").replace(".png", ".txt")
 
-# Draw ground truth
-img_gt = draw_yolo_boxes(img, gt_labels, CLASSES, color=(0,255,0))
+    # Load image + ground truth
+    img = cv2.imread(img_path)
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    gt_labels = load_yolo_label(label_path)
 
-# Run prediction
-results = model.predict(img_path, conf=0.25)
-pred_labels = []
+    # Draw ground truth
+    img_gt = draw_yolo_boxes(img, gt_labels, CLASSES, color=(0,255,0))
 
-for box in results[0].boxes:
-    cls = int(box.cls[0])
-    xc, yc, w, h = box.xywhn[0].tolist()
-    pred_labels.append((cls, xc, yc, w, h))
+    # Run prediction
+    results = model.predict(img_path, conf=0.25)
+    pred_labels = []
 
-# Draw predictions
-img_pred = draw_yolo_boxes(img, pred_labels, CLASSES, color=(255,0,0))
+    for box in results[0].boxes:
+        cls = int(box.cls[0])
+        xc, yc, w, h = box.xywhn[0].tolist()
+        pred_labels.append((cls, xc, yc, w, h))
 
-# Show side-by-side
-plt.figure(figsize=(16,8))
-plt.subplot(1,2,1)
-plt.title("Ground Truth")
-plt.imshow(img_gt)
-plt.axis("off")
+    # Draw predictions
+    img_pred = draw_yolo_boxes(img, pred_labels, CLASSES, color=(255,0,0))
 
-plt.subplot(1,2,2)
-plt.title("Prediction")
-plt.imshow(img_pred)
-plt.axis("off")
+    # Show side-by-side
+    plt.figure(figsize=(16,8))
+    plt.subplot(1,2,1)
+    plt.title("Ground Truth")
+    plt.imshow(img_gt)
+    plt.axis("off")
 
-plt.show()
+    plt.subplot(1,2,2)
+    plt.title("Prediction")
+    plt.imshow(img_pred)
+    plt.axis("off")
+
+    plt.show()

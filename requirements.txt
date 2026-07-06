@@ -1,0 +1,63 @@
+# KITTI YOLO Tracking — Python dependencies
+# Install with: pip install -r requirements.txt
+# TensorRT requires the NVIDIA TensorRT SDK installed separately.
+# Ollama (local LLM) install separately from https://ollama.com
+#
+# PyTorch: requirements.txt defaults to CPU-only (--extra-index-url below).
+# For GPU training swap to the Colab notebook — it handles its own torch install.
+# To install GPU version locally instead:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+# Pull CPU-only torch wheels from PyTorch index (smaller download, no CUDA libs)
+# --extra-index-url https://download.pytorch.org/whl/cpu
+
+# ---------------------------------------------------------
+# Streamlit RAG query app
+# ---------------------------------------------------------
+streamlit==1.58.0
+faiss-cpu==1.14.3
+sentence-transformers
+groq==1.5.0
+PyYAML==6.0.3
+
+# ---------------------------------------------------------
+# Distributed compute — parallel label parsing (Dask)
+# ---------------------------------------------------------
+dask
+
+# ---------------------------------------------------------
+# Vision / image processing
+# ---------------------------------------------------------
+opencv-python==4.13.0.92
+Pillow==12.2.0
+matplotlib==3.10.9
+
+# ---------------------------------------------------------
+# ML core (CPU-only via --extra-index-url above)
+# ---------------------------------------------------------
+torch
+torchvision
+transformers
+accelerate
+tokenizers
+safetensors
+huggingface_hub
+
+# ---------------------------------------------------------
+# YOLO
+# ---------------------------------------------------------
+ultralytics
+
+# ---------------------------------------------------------
+# Data / numerics
+# ---------------------------------------------------------
+numpy
+pandas
+scipy
+scikit-learn
+
+# ---------------------------------------------------------
+# HTTP / utilities
+# ---------------------------------------------------------
+requests==2.33.1
+tqdm==4.67.3

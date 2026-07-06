@@ -1,0 +1,26 @@
+query: more than pedestrians 5
+mode: Scene Search
+exported_at: '2026-07-04T03:48:57'
+total_matched: 209
+exported: 5
+llm_output:
+  filters:
+    num_pedestrians:
+      '>': 5
+  semantic_query: scenes with more than 5 pedestrians
+frames:
+- id: '002707'
+  image: data/training/image_2/002707.png
+  label: data/training/label_2/002707.txt
+- id: '006139'
+  image: data/training/image_2/006139.png
+  label: data/training/label_2/006139.txt
+- id: '006583'
+  image: data/training/image_2/006583.png
+  label: data/training/label_2/006583.txt
+- id: '000966'
+  image: data/training/image_2/000966.png
+  label: data/training/label_2/000966.txt
+- id: '002666'
+  image: data/training/image_2/002666.png
+  label: data/training/label_2/002666.txt

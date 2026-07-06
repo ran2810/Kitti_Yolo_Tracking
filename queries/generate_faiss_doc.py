@@ -1,10 +1,20 @@
-import os, json
+import os, json, time
+import numpy as np
 from sentence_transformers import SentenceTransformer
+from PIL import Image
 import faiss
 from tqdm import tqdm
+from pathlib import Path
+
+test_parallelism = False
+
+if test_parallelism:
+    from concurrent.futures import ThreadPoolExecutor
+    import dask.bag as db
+    from functools import partial
 
 # ------------------------------------------------------------
-# KITTI PARSER
+# KITTI PARSER 
 # ------------------------------------------------------------
 def parse_kitti_label_file(path):
     """
@@ -83,23 +93,31 @@ def build_doc(frame_id, label_dir, image_dir):
 def compute_iou(boxA, boxB):
     """
     Compute IoU between two KITTI bbox arrays [x1,y1,x2,y2].
+    IoU = IntersectionArea/UnionArea
     """
     x1A, y1A, x2A, y2A = boxA
     x1B, y1B, x2B, y2B = boxB
 
+    # top-left
     inter_x1 = max(x1A, x1B)
     inter_y1 = max(y1A, y1B)
+    # bottom-right
     inter_x2 = min(x2A, x2B)
     inter_y2 = min(y2A, y2B)
-
-    inter_area = max(0, inter_x2 - inter_x1) * max(0, inter_y2 - inter_y1)
+    
+    # if no intersection -> -ve value set to zero. 
+    inter_w = max(0, inter_x2 - inter_x1)
+    inter_h = max(0, inter_y2 - inter_y1)
+    # get areas of A, B and intersection
+    inter_area = inter_w * inter_h
     areaA = (x2A - x1A) * (y2A - y1A)
     areaB = (x2B - x1B) * (y2B - y1B)
 
+    # union = total area - intersection
     union = areaA + areaB - inter_area
-    if union <= 0:
-        return 0.0
-    return inter_area / union
+
+    # check if union > 0
+    return inter_area / union if union > 0 else 0.0
 
 # ------------------------------------------------------------
 # ERROR DOCUMENT GENERATION
@@ -118,7 +136,7 @@ def generate_error_docs(frame_ids, label_dir, pred_dir, image_dir):
         # parse ground truth label file
         gt_objs = parse_kitti_label_file(gt_path)
 
-        # prediction file missing → no detections
+        # prediction file missing -> no detections by yolo model
         if not os.path.exists(pred_path):
             for obj in gt_objs:
                 error_docs.append({
@@ -146,19 +164,19 @@ def generate_error_docs(frame_ids, label_dir, pred_dir, image_dir):
         matched_pred = set()
 
         # Match predictions to GT
-        for pi, (p_cls, p_box) in enumerate(pred_boxes):
+        for p_idx, (p_cls, p_box) in enumerate(pred_boxes):
             best_iou = 0
             best_gi = None
 
-            for gi, (g_cls, g_box, g_occ, g_trunc) in enumerate(gt_boxes):
+            for g_idx, (g_cls, g_box, g_occ, g_trunc) in enumerate(gt_boxes):
                 iou = compute_iou(p_box, g_box)
                 if iou > best_iou:
                     best_iou = iou
-                    best_gi = gi
+                    best_gi = g_idx
 
             if best_iou >= 0.5:
                 matched_gt.add(best_gi)
-                matched_pred.add(pi)
+                matched_pred.add(p_idx)
             else:
                 # False Positive
                 error_docs.append({
@@ -167,7 +185,7 @@ def generate_error_docs(frame_ids, label_dir, pred_dir, image_dir):
                     "class": p_cls,
                     "iou": float(best_iou),
                     "bbox": p_box, 
-                    "confidence": pred_objs[pi].get("score", None), 
+                    "confidence": pred_objs[p_idx].get("score", None), 
                     "occlusion_level": None,
                     "truncation_value": None,
                     "summary_text": f"False positive: predicted {p_cls} with IoU {best_iou:.2f} in frame {fid}.",
@@ -175,8 +193,8 @@ def generate_error_docs(frame_ids, label_dir, pred_dir, image_dir):
                 })
 
         # False Negatives
-        for gi, (g_cls, g_box, g_occ, g_trunc) in enumerate(gt_boxes):
-            if gi not in matched_gt:
+        for g_idx, (g_cls, g_box, g_occ, g_trunc) in enumerate(gt_boxes):
+            if g_idx not in matched_gt:
                 error_docs.append({
                     "id": fid,
                     "error_type": "FN",
@@ -192,33 +210,75 @@ def generate_error_docs(frame_ids, label_dir, pred_dir, image_dir):
 
     return error_docs
 
-
+def build_docs_batch(fids, label_dir, image_dir):
+    # one Dask task processes a whole batch
+    return [build_doc(fid, label_dir, image_dir) for fid in fids]
 # ------------------------------------------------------------
 # MAIN INDEX BUILDER
 # ------------------------------------------------------------
 def build_kitti_index(label_dir, image_dir, pred_dir):
     """
-    Docstring for build_kitti_index
-    
-    :param label_dir: label files relative path
-    :param image_dir: image files relative path
-    :param pred_dir: prediction label files relative path
+    Docstring for build_kitti_index for scene and error -> docs & index both modes(scene and error) and model
     """
 
     frame_ids = [f.split(".")[0] for f in os.listdir(label_dir)]
 
+    # tested parallelism but sequential for loop wins due to local files and not CPU-heavy
+    if test_parallelism:
+        # Use dask per frame - 11066 ms 
+        t0 = time.perf_counter()
+        _build = partial(build_doc, label_dir=label_dir, image_dir=image_dir)
+        n_parts = min(os.cpu_count() or 4, len(frame_ids))
+        scene_docs = (
+            db.from_sequence(frame_ids, npartitions=n_parts)
+            .map(_build)
+            .compute()
+        )
+        db_latency_ms = (time.perf_counter() - t0) * 1000
+        print(f"\ndask frame-wise latency: {db_latency_ms:.0f} ms")
+
+        # Use batch dask - 10724ms
+        batch_size = 500
+        batches = [frame_ids[i:i+batch_size] for i in range(0, len(frame_ids), batch_size)]
+        _build_batch = partial(build_docs_batch, label_dir=label_dir, image_dir=image_dir)
+
+        t0 = time.perf_counter()
+        scene_docs = (
+            db.from_sequence(batches, npartitions=len(batches))
+            .map(_build_batch)
+            .flatten()
+            .compute()
+        )
+        db_batch_latency_ms = (time.perf_counter() - t0) * 1000
+        print(f"\ndask batch processing latency: {db_batch_latency_ms:.0f} ms")
+
+        # ThreadPoolExecutor - 1560ms
+        t0 = time.perf_counter()
+        _build = partial(build_doc, label_dir=label_dir, image_dir=image_dir)
+        with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
+            scene_docs = list(pool.map(_build, frame_ids))
+        Threadpool_latency_ms = (time.perf_counter() - t0) * 1000
+        print(f"\nThreadPoolExecutor latency: {Threadpool_latency_ms:.0f} ms")
+
     # -------------------------
     # Scene documents
     # -------------------------
-    scene_docs = [build_doc(fid, label_dir, image_dir) for fid in frame_ids]
+    # sequential for loop - 1075ms
+    t0 = time.perf_counter()
+    scene_docs = []
+    for fid in frame_ids:
+        doc = build_doc(fid, label_dir, image_dir)
+        scene_docs.append(doc)
+    forloop_latency_ms = (time.perf_counter() - t0) * 1000
+    print(f"\nfor loop reading latency: {forloop_latency_ms:.0f} ms")
 
     model = SentenceTransformer("all-MiniLM-L6-v2")
-    scene_embeddings = model.encode(
-        [d["summary_text"] for d in scene_docs],
-        convert_to_numpy=True
-    )
+    summary_texts  = []
+    for d in scene_docs:
+        summary_texts .append(d["summary_text"])
+    scene_embeddings = model.encode(summary_texts , convert_to_numpy=True)
 
-    # dimension (384 based on model used above). good for the N < 100k. fast and 100% recall
+    # dimension (384 based on model used above) --> fast and 100% recall
     scene_index = faiss.IndexFlatL2(scene_embeddings.shape[1])
     scene_index.add(scene_embeddings)
 
@@ -228,10 +288,11 @@ def build_kitti_index(label_dir, image_dir, pred_dir):
     error_docs = generate_error_docs(frame_ids, label_dir, pred_dir, image_dir)
 
     if len(error_docs) > 0:
-        error_embeddings = model.encode(
-            [d["summary_text"] for d in error_docs],
-            convert_to_numpy=True
-        )
+        error_texts  = []
+        for d in error_docs:
+            error_texts.append(d["summary_text"])
+        error_embeddings = model.encode(error_texts, convert_to_numpy=True)
+
         error_index = faiss.IndexFlatL2(error_embeddings.shape[1])
         error_index.add(error_embeddings)
     else:
@@ -241,26 +302,121 @@ def build_kitti_index(label_dir, image_dir, pred_dir):
 
 
 # ------------------------------------------------------------
+# CLIP IMAGE INDEX
+# ------------------------------------------------------------
+def build_clip_index(image_dir, model_name="clip-ViT-B-32"):
+    """
+    Build a CLIP image embedding index over all KITTI frames using provided model (B-32/L-14) -> Clip index and frames
+    """
+    print(f"Loading CLIP model: {model_name}")
+    clip_model = SentenceTransformer(model_name)
+
+    image_files = sorted(f for f in os.listdir(image_dir) if f.lower().endswith(".png"))
+
+    frame_ids  = []
+    embeddings = []
+
+    # iterate over kitti training images
+    for fname in tqdm(image_files, desc=f"Building CLIP index ({model_name})"):
+        frame_id = fname.rsplit(".", 1)[0]
+        img_path = os.path.join(image_dir, fname)
+        try:
+            img = Image.open(img_path).convert("RGB")
+            # clip encode returns float64 but FAISS needs float32 -> cast
+            emb = clip_model.encode(img, convert_to_numpy=True).astype("float32")
+            # get L2 dist
+            norm = np.linalg.norm(emb)
+            # normalize
+            if norm > 0:
+                emb /= norm
+            frame_ids.append(frame_id)
+            embeddings.append(emb)
+        except Exception as e:
+            print(f"  Skipping {fname}: {e}")
+
+    embeddings = np.stack(embeddings).astype("float32")
+    dim = embeddings.shape[1]
+
+    index = faiss.IndexFlatIP(dim)
+    index.add(embeddings)
+
+    print(f"CLIP index built: {len(frame_ids)} frames, dim={dim}")
+    return frame_ids, index
+
+
+# Model name -> short tag used in filenames
+_MODEL_TAG_MAP = {
+    "clip-ViT-B-32": "B32",
+    "clip-ViT-L-14": "14", 
+}
+
+# get tag to add as suffix for file naming
+def _model_tag(model_name):
+    return _MODEL_TAG_MAP.get(model_name, model_name.split("-")[-1])
+
+
+# ------------------------------------------------------------
 # CLI ENTRY POINT
 # ------------------------------------------------------------
 if __name__ == "__main__":
-    label_dir = "../data/training/label_2"
-    image_dir = "../data/training/image_2"
-    pred_dir = "../runs/detect/predict/kitti_labels"
+    import argparse
 
-    scene_docs, scene_index, error_docs, error_index, model = build_kitti_index(label_dir, image_dir, pred_dir)
+    parser = argparse.ArgumentParser(description="Build KITTI FAISS indexes")
+    parser.add_argument(
+        "--clip-model",
+        default="clip-ViT-B-32",
+        choices=["clip-ViT-B-32", "clip-ViT-L-14"],
+        help="CLIP model to use for image index (default: clip-ViT-B-32)"
+    )
+    parser.add_argument(
+        "--skip-text", action="store_true",
+        help="Skip rebuilding text (scene/error) indexes — only rebuild CLIP index"
+    )
+    args = parser.parse_args()
 
-    # Save scene docs
-    with open("data/kitti_docs.json", "w") as f:
-        json.dump(scene_docs, f, indent=2)
-    faiss.write_index(scene_index, "../data/kitti_index.faiss")
+    # get parent dir to join with images path
+    current_dir = Path(__file__).resolve().parent
+    parent_dir = current_dir.parent
+    label_dir = parent_dir / "data" / "training" / "label_2"
+    image_dir = parent_dir / "data" / "training" / "image_2"
+    pred_dir  = parent_dir / "runs" / "detect" / "predict" / "kitti_labels"
 
-    # Save error docs
-    with open("../data/error_docs.json", "w") as f:
-        json.dump(error_docs, f, indent=2)
-    if error_index:
-        faiss.write_index(error_index, "../data/error_index.faiss")
+    # Text indexes (scene + error) 
+    if not args.skip_text:
+        scene_docs, scene_index, error_docs, error_index, model = build_kitti_index(
+            label_dir, image_dir, pred_dir
+        )
+        
+        # write scenes files -> .json doc and index(.faiss)
+        with open(parent_dir / "data" / "kitti_docs.json", "w") as f:
+            json.dump(scene_docs, f, indent=2)
+        faiss.write_index(scene_index, parent_dir / "data" / "kitti_index.faiss")
 
-    # Save embedding model name
-    with open("../data/embedding_model.txt", "w") as f:
-        f.write("all-MiniLM-L6-v2")
+        # write error files -> .json doc and index(.faiss) 
+        with open(parent_dir / "data" / "error_docs.json", "w") as f:
+            json.dump(error_docs, f, indent=2)
+        if error_index:
+            faiss.write_index(error_index, parent_dir / "data" / "error_index.faiss")
+
+        # write model name
+        with open(parent_dir / "data" / "embedding_model.txt", "w") as f:
+            f.write("all-MiniLM-L6-v2")
+        print("Text indexes saved.")
+    else:
+        print("Skipping text indexes (--skip-text).")
+
+    # CLIP image index 
+    tag = _model_tag(args.clip_model)
+    index_path = parent_dir / "data" / f"clip_index_{tag}.faiss" 
+    ids_path   = parent_dir / "data" / f"clip_frame_ids_{tag}.json"
+
+    # get index and frame_ids files
+    clip_frame_ids, clip_index = build_clip_index(image_dir, args.clip_model)
+
+    # write clip files -> .json doc and index(.faiss) 
+    with open(ids_path, "w") as f:
+        json.dump(clip_frame_ids, f, indent=2)
+    faiss.write_index(clip_index, index_path)
+
+    print(f"CLIP index saved: {index_path}  ({clip_index.d}-dim)")
+    print(f"Frame IDs saved:  {ids_path}")

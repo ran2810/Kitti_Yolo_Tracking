@@ -1,3 +1,4 @@
+import argparse
 import torch
 import subprocess
 import time
@@ -238,10 +239,10 @@ def evaluate_int8_cpu(model_path, data_yaml):
 
     print("\n=== INT8 Evaluation (ONNX Runtime) ===")
 
-    int8_model = YOLO("runs/detect/train/weights/best.onnx")
+    int8_model = YOLO(int8_path)
 
     int8_metrics = int8_model.val(
-        data="kitti.yaml",
+        data=data_yaml,
         imgsz=640,
         batch=1,
         device="cpu"
@@ -396,7 +397,14 @@ def trigger_all_benchmarks(model_path="best.pt", data_yaml="../data/kitti.yaml")
 
 
 # ------------------------------------------------------------
-# Run directly from CLI
+# CLI
 # ------------------------------------------------------------
 if __name__ == "__main__":
-    trigger_all_benchmarks("best.pt", "../data/kitti.yaml")
+    parser = argparse.ArgumentParser(description="Benchmark YOLOv8 across precisions and backends")
+    parser.add_argument("--model", default="best.pt",
+                        help="Path to model weights (default: best.pt)")
+    parser.add_argument("--data",  default="../data/kitti.yaml",
+                        help="Path to dataset YAML (default: ../data/kitti.yaml)")
+    args = parser.parse_args()
+
+    trigger_all_benchmarks(args.model, args.data)
