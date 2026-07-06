@@ -2,7 +2,7 @@
 
 An end-to-end pipeline built on the KITTI autonomous driving dataset, covering three phases: training a YOLO model from raw sensor data, benchmarking it across deployment targets, and building a natural language query system for scenario mining and error analysis.
 
-[Architecture diagram](architecture/Kitti-Yolo-Rag-pipeline.drawio)
+![Architecture](architecture/Kitti-Yolo-Rag-pipeline.svg)
 
 ---
 
@@ -188,9 +188,10 @@ Both modes support two CLIP models selectable from the sidebar. ViT-B-32 is fast
 "IoU < 0.4 errors for cars"
 
 # Visual Search (Text -> Images)
-"pedestrian crossing sign"
+"street with parked vehicles"
 "road with tram tracks"
-"construction worker near vehicle"
+"pedestrians crossing road"
+"construction-cones on road"
 ```
 
 ### Running the app
