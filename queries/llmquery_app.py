@@ -1,5 +1,5 @@
 import streamlit as st
-import json, os, time
+import json, os, time, sys
 import yaml
 from datetime import datetime
 import faiss
@@ -10,6 +10,13 @@ import requests
 import re
 import cv2
 from pathlib import Path
+
+# Make repository-level observability utilities available when Streamlit is
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from observability import get_dashboard_summary, record_event, start_metrics_server
 
 # check groq availability 
 try:
@@ -26,9 +33,13 @@ print_debug = True
 current_dir = Path(__file__).resolve().parent
 parent_dir = current_dir.parent
 
+# Optional -> Prometheus endpoint: KITTI_METRICS_ENABLED=1 streamlit run llmquery_app.py
+if os.getenv("KITTI_METRICS_ENABLED", "0") == "1":
+    start_metrics_server()
+
 
 # ------------------------------------------------------------
-# AUTOMATIC MODE (SCENE or ERROR) DETECTIOn
+# AUTOMATIC MODE (SCENE or ERROR) DETECTION
 # ------------------------------------------------------------
 # min cosine similarity gap between modes to trust embedding
 CONFIDENCE_THRESHOLD = 0.08
@@ -706,6 +717,25 @@ st.sidebar.markdown("### Mode Hint")
 st.sidebar.caption("Auto-detection overrides this if error keywords (FP, FN, IoU) are found.")
 query_mode = st.sidebar.selectbox("Mode Hint", ["Scene Search", "Error Analysis"])
 
+st.sidebar.divider()
+
+# Observability layer
+with st.sidebar.expander("Observability", expanded=False):
+    health = get_dashboard_summary()
+    st.caption("Recent local query events")
+    col1, col2 = st.columns(2)
+    col1.metric("Queries", health["queries"])
+    success = health["success_rate"]
+    col2.metric("Success", "—" if success is None else f"{success:.0%}")
+    col3, col4 = st.columns(2)
+    p50 = health["latency_p50_ms"]
+    p95 = health["latency_p95_ms"]
+    col3.metric("p50", "—" if p50 is None else f"{p50:.0f} ms")
+    col4.metric("p95", "—" if p95 is None else f"{p95:.0f} ms")
+    fallback = health["fallback_rate"]
+    st.metric("Semantic fallback", "—" if fallback is None else f"{fallback:.0%}")
+
+
 
 # ---------------------------------------------------------
 # Text Based Query (SCENE or ERROR mode)
@@ -716,6 +746,7 @@ top_k = st.slider("Number of results", 1, 10, 5)
 
 # check if pre-selected mode is correct based on query
 if query:
+    query_started = time.perf_counter()
     effective_mode, was_overridden, scores = auto_detect_mode(
         query, query_mode, mode_embeddings, emb_model
     )
@@ -803,6 +834,12 @@ if query:
                 total_matched_frames=len(filtered_docs), llm_parsed=parsed,
             )
             st.success(f"Saved {len(filtered_docs[:top_k])} of {len(filtered_docs)} frames → `{out_path.relative_to(parent_dir)}`")
+        record_event(
+            "query", query=query, mode=effective_mode, route="filter",
+            latency_ms=(time.perf_counter() - query_started) * 1000,
+            result_count=len(filtered_docs), fallback_used=False,
+            metadata={"top_k": top_k, "provider": llm_config.get("provider")},
+        )
         st.stop()
 
     if query_filters:
@@ -810,6 +847,12 @@ if query:
         st.warning("No matches for query_filters. Falling back to semantic search.")
 
     results = semantic_search(semantic_query, docs, index, emb_model, top_k)
+    record_event(
+        "query", query=query, mode=effective_mode, route="semantic",
+        latency_ms=(time.perf_counter() - query_started) * 1000,
+        result_count=len(results), fallback_used=bool(query_filters),
+        metadata={"top_k": top_k, "provider": llm_config.get("provider")},
+    )
     st.markdown("### Semantic Search Results")
 
     for d in results:
@@ -894,6 +937,11 @@ Query: "{clip_text_query}"
             q_emb      = get_clip_encode_text(expanded_query, clip_model)
             latency_ms = (time.perf_counter() - t0) * 1000
             results    = clip_search(q_emb, clip_index, clip_frame_ids, scene_docs, clip_top_k)
+            record_event(
+                "query", query=clip_text_query, mode="Visual Search", route="clip_text",
+                latency_ms=latency_ms, result_count=len(results),
+                metadata={"top_k": clip_top_k, "clip_model": clip_model_label},
+            )
             # latency display
             color = "green" if latency_ms < 500 else ("orange" if latency_ms < 2000 else "red")
             st.caption(f"CLIP encode + search :{color}[{latency_ms:.0f} ms]")
@@ -929,6 +977,12 @@ Query: "{clip_text_query}"
             latency_ms = (time.perf_counter() - t0) * 1000
             results    = clip_search(q_emb, clip_index, clip_frame_ids, scene_docs, clip_top_k)
             # latency display
+            record_event(
+                "query", mode="Visual Search", route="clip_image",
+                latency_ms=latency_ms, result_count=len(results),
+                metadata={"top_k": clip_top_k, "clip_model": clip_model_label,
+                          "query_images": len(pil_images)},
+            )
             color = "green" if latency_ms < 500 else ("orange" if latency_ms < 2000 else "red")
             st.caption(f"CLIP image encode ({len(pil_images)} image(s)) + search: {color}[{latency_ms:.0f} ms]") 
             # display results 

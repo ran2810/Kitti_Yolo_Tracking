@@ -17,6 +17,7 @@ model/evaluate_yolo.py                   # mAP evaluation
 model/benchmark_model.py                 # FP32/FP16/INT8 benchmarking
 utils/visualize_predictions.py           # GT vs prediction overlay
 queries/generate_faiss_doc.py            # builds FAISS indexes
+observability/data_quality.py            # verifies data quality for .jsons & .faiss and generates report
 queries/llmquery_app.py                  # Streamlit query app
 data/fuzzy_rules.json                    # synonym + filter rules for fuzzy matching
 data/                                    # generated indexes, docs, configs
@@ -208,6 +209,45 @@ TensorRT requires the NVIDIA TensorRT SDK installed separately. For the query ap
 
 ---
 
+## Observability and quality gates
+
+The explorer includes a lightweight observability layer for the complete data loop. It does not
+require a separate backend and preserves the existing Streamlit workflow.
+
+### Runtime telemetry
+
+Every filter, semantic, and CLIP search writes one structured JSONL event under
+`artifacts/observability/events.jsonl`. Events contain the selected mode, retrieval route,
+latency, result count, fallback use, and model/provider metadata. Raw query text is never stored;
+a short SHA-256 fingerprint is used to identify repeated queries.
+
+The **Observability** sidebar panel displays recent query count, success rate, semantic-fallback
+rate, and p50/p95 latency. Set a different event location with `KITTI_OBSERVABILITY_PATH`.
+
+Prometheus export is optional:
+
+```powershell
+$env:KITTI_METRICS_ENABLED="1"; $env:KITTI_METRICS_PORT="8001"; streamlit run .\llmquery_app.py
+# metrics: http://localhost:8001/metrics
+```
+
+Exported metrics include query volume by mode/route/status, latency histograms, and result-count
+histograms. Prometheus/Grafana can scrape and visualize this endpoint without coupling the app to
+either service.
+
+### Data-quality validation
+
+Validate generated documents, schemas, value ranges, duplicate scene IDs, and FAISS index
+cardinality:
+
+```bash
+python -m observability.data_quality --data-dir data
+```
+
+This generates a report `artifacts/observability/data_quality.json` and exits non-zero when a hard quality gate fails.
+
+---
+
 ## Querying Limitations — CLIP Visual Search
 
 CLIP encodes the full frame as a single embedding vector. For scene-level queries (object counts, road type, occlusion level) this works well. For small or visual objects like traffic signs, construction workers, road markings. The object signal is diluted by dominant scene content (road, sky, vehicles) and retrieval degrades significantly.
@@ -260,8 +300,8 @@ This hybrid avoids the need for a separate region proposal network for standard 
 
 ## Next Steps
 
-- **FastAPI backend:** decouple query logic from Streamlit; FastAPI handles FAISS search, LLM routing, and CLIP encoding with multi-worker concurrency. Streamlit becomes a thin UI layer, enabling multiple simultaneous users.
-- **Qdrant:** replace FAISS for named vectors and pre-filtered HNSW; stores text and CLIP embeddings per frame in a single collection, enabling filtered vector search without post-filtering accuracy loss.
-- **RAG evaluation:** define ground-truth query→frame pairs; measure Precision@5, Recall@5, and per-query latency to benchmark retrieval quality objectively.
+- **FastAPI backend:** decouple query logic from Streamlit. FastAPI handles FAISS search, LLM routing, and CLIP encoding with multi-worker concurrency. Streamlit becomes a thin UI layer, enabling multiple simultaneous users.
+- **Qdrant:** replace FAISS for named vectors and pre-filtered HNSW. Stores text and CLIP embeddings per frame in a single collection, enabling filtered vector search without post-filtering accuracy loss.
+- **RAG evaluation:** define ground-truth query→frame pairs. Measure Precision@5, Recall@5, and per-query latency to benchmark retrieval quality objectively.
 - **Two-stage CLIP retrieval:** region-crop re-ranking (see Querying Limitations) to improve small object recall for signs, construction workers, and sparse targets.
 - **FiftyOne:**  dataset curation, label quality inspection, and structured export to annotation pipelines.
